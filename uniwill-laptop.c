@@ -510,7 +510,7 @@ static int uniwill_write(struct device *dev, enum hwmon_sensor_types type, u32 a
 			switch (val) {
 			case 1:
 				return regmap_update_bits(data->regmap, EC_ADDR_MANUAL_FAN_CTRL,
-							  FAN_MODE_BOOST, 1);
+							  FAN_MODE_BOOST, FAN_MODE_BOOST);
 			case 2:
 				return regmap_update_bits(data->regmap, EC_ADDR_MANUAL_FAN_CTRL,
 							  FAN_MODE_BOOST, 0);
@@ -579,7 +579,8 @@ static int uniwill_ec_init(struct uniwill_data *data)
 
 	dev_dbg(&data->wdev->dev, "Project ID: %u\n", value);
 
-	ret = regmap_update_bits(data->regmap, EC_ADDR_AP_OEM, ENABLE_MANUAL_CTRL, 1);
+	ret = regmap_update_bits(data->regmap, EC_ADDR_AP_OEM, ENABLE_MANUAL_CTRL,
+				 ENABLE_MANUAL_CTRL);
 	if (ret < 0)
 		return ret;
 
