@@ -46,10 +46,9 @@
 #define EC_ADDR_BAT_ALLERT	0x0494
 
 #define EC_ADDR_PROJECT_ID	0x0740
-// TODO
 
 #define EC_ADDR_AP_OEM		0x0741
-#define	ENABLE_MANUAL_FAN_CTRL	BIT(0)
+#define	ENABLE_MANUAL_CTRL	BIT(0)
 #define ITE_KBD_EFFECT_REACTIVE	BIT(3)
 #define FAN_ABNORMAL		BIT(5)
 
@@ -62,8 +61,6 @@
 #define CTGP_DB_GENERAL_ENABLE	BIT(0)
 #define CTGP_DB_DB_ENABLE	BIT(1)
 #define CTGP_DB_CTGP_ENABLE	BIT(2)
-
-// TODO: Conflicts with fan profile table!
 
 #define EC_ADDR_CTGP_OFFSET	0x0744
 
@@ -101,7 +98,7 @@
 #define SHORTCUT_KEY		BIT(4)
 #define SUPER_KEY_LOCK		BIT(5)
 #define LIGHTBAR		BIT(6)
-#define FAN_BOOST		BIT(7)
+#define FAN_BOOST		BIT(7)	/* Seems to be unrelated to manual fan control */
 
 #define EC_ADDR_SUPPORT_2	0x0766
 #define SILENT_MODE		BIT(0)
@@ -202,10 +199,6 @@
 
 #define PWM_MAX			200
 
-static bool force_pwm_enable;
-module_param_unsafe(force_pwm_enable, bool, 0);
-MODULE_PARM_DESC(force_pwm_enable, "Force enabling of PWM support");
-
 enum uniwill_method {
 	UNIWILL_GET_ULONG	= 0x01,
 	UNIWILL_SET_ULONG	= 0x02,
@@ -224,8 +217,6 @@ struct uniwill_method_buffer {
 struct uniwill_data {
 	struct wmi_device *wdev;
 	struct regmap *regmap;
-	struct mutex pwm_lock;	/* Protects PWM mode changes */
-	bool pwm_support;
 };
 
 static const char * const uniwill_temp_labels[] = {
@@ -280,7 +271,7 @@ static int uniwill_ec_reg_write(void *context, unsigned int reg, unsigned int va
 {
 	struct uniwill_method_buffer input = {
 		.address = cpu_to_le16(reg),
-		.data = cpu_to_le16(val),
+		.data = cpu_to_le16(val & U8_MAX),
 		.operation = 0x0000,
 	};
 	struct uniwill_data *data = context;
@@ -315,7 +306,7 @@ static int uniwill_ec_reg_read(void *context, unsigned int reg, unsigned int *va
 	if (output == 0xFEFEFEFE)
 		return -ENXIO;
 
-	*val = (u16)output;
+	*val = (u8)output;
 
 	return 0;
 }
@@ -346,7 +337,9 @@ static bool uniwill_readable_reg(struct device *dev, unsigned int reg)
 	case EC_ADDR_CPU_TEMP:
 	case EC_ADDR_GPU_TEMP:
 	case EC_ADDR_MAIN_FAN_RPM_1:
+	case EC_ADDR_MAIN_FAN_RPM_2:
 	case EC_ADDR_SECOND_FAN_RPM_1:
+	case EC_ADDR_SECOND_FAN_RPM_2:
 	case EC_ADDR_PROJECT_ID:
 	case EC_ADDR_AP_OEM:
 	case EC_ADDR_MANUAL_FAN_CTRL:
@@ -365,7 +358,9 @@ static bool uniwill_volatile_reg(struct device *dev, unsigned int reg)
 	case EC_ADDR_CPU_TEMP:
 	case EC_ADDR_GPU_TEMP:
 	case EC_ADDR_MAIN_FAN_RPM_1:
+	case EC_ADDR_MAIN_FAN_RPM_2:
 	case EC_ADDR_SECOND_FAN_RPM_1:
+	case EC_ADDR_SECOND_FAN_RPM_2:
 		return true;
 	default:
 		return false;
@@ -374,7 +369,7 @@ static bool uniwill_volatile_reg(struct device *dev, unsigned int reg)
 
 static const struct regmap_config uniwill_ec_config = {
 	.reg_bits = 16,
-	.val_bits = 16,
+	.val_bits = 8,
 	.writeable_reg = uniwill_writeable_reg,
 	.readable_reg = uniwill_readable_reg,
 	.volatile_reg = uniwill_volatile_reg,
@@ -387,25 +382,13 @@ static const struct regmap_config uniwill_ec_config = {
 static umode_t uniwill_is_visible(const void *drvdata, enum hwmon_sensor_types type, u32 attr,
 				  int channel)
 {
-	const struct uniwill_data *data = drvdata;
-
 	switch (type) {
 	case hwmon_temp:
 		return 0444;
 	case hwmon_fan:
 		return 0444;
 	case hwmon_pwm:
-		if (!data->pwm_support)
-			return 0;
-
-		switch (attr) {
-		case hwmon_pwm_input:
-			return 0644;
-		case hwmon_pwm_enable:
-			return 0644;
-		default:
-			return 0;
-		}
+		return 0644;
 	default:
 		return 0;
 	}
@@ -439,10 +422,10 @@ static int uniwill_read(struct device *dev, enum hwmon_sensor_types type, u32 at
 	case hwmon_fan:
 		switch (channel) {
 		case 0:
-			ret = regmap_read(data->regmap, EC_ADDR_MAIN_FAN_RPM_1, &value);
+			ret = regmap_bulk_read(data->regmap, EC_ADDR_MAIN_FAN_RPM_1, &value, 2);
 			break;
 		case 1:
-			ret = regmap_read(data->regmap, EC_ADDR_SECOND_FAN_RPM_1, &value);
+			ret = regmap_bulk_read(data->regmap, EC_ADDR_SECOND_FAN_RPM_1, &value, 2);
 			break;
 		default:
 			return -EOPNOTSUPP;
@@ -470,36 +453,14 @@ static int uniwill_read(struct device *dev, enum hwmon_sensor_types type, u32 at
 			*val = fixp_linear_interpolate(0, 0, PWM_MAX, U8_MAX, value);
 			return 0;
 		case hwmon_pwm_enable:
-			guard(mutex)(&data->pwm_lock);
-
-			ret = regmap_read(data->regmap, EC_ADDR_AP_OEM, &value);
-			if (ret < 0)
-				return ret;
-
-			if (!(value & ENABLE_MANUAL_FAN_CTRL)) {
-				*val = 2;
-				return 0;
-			}
-
 			ret = regmap_read(data->regmap, EC_ADDR_MANUAL_FAN_CTRL, &value);
 			if (ret < 0)
 				return ret;
 
-			if (value & FAN_MODE_BOOST) {
-				ret = regmap_read(data->regmap, EC_ADDR_PWM_1, &value);
-				if (ret < 0)
-					return ret;
-
-				if (value == PWM_MAX)
-					*val = 0;
-				else
-					*val = 1;
-			} else {
-				if (value & FAN_MODE_AUTO)
-					*val = 2;
-				else
-					*val = 1;
-			}
+			if (value & FAN_MODE_BOOST)
+				*val = 1;
+			else
+				*val = 2;
 
 			return 0;
 		default:
@@ -530,7 +491,6 @@ static int uniwill_write(struct device *dev, enum hwmon_sensor_types type, u32 a
 {
 	struct uniwill_data *data = dev_get_drvdata(dev);
 	unsigned int value;
-	int ret;
 
 	switch (type) {
 	case hwmon_pwm:
@@ -547,34 +507,13 @@ static int uniwill_write(struct device *dev, enum hwmon_sensor_types type, u32 a
 				return -EOPNOTSUPP;
 			}
 		case hwmon_pwm_enable:
-			guard(mutex)(&data->pwm_lock);
 			switch (val) {
-			case 0:
-				ret = regmap_write(data->regmap, EC_ADDR_MANUAL_FAN_CTRL,
-						   FAN_MODE_BOOST);
-				if (ret < 0)
-					return ret;
-
-				return regmap_write(data->regmap, EC_ADDR_PWM_1, PWM_MAX);
 			case 1:
-				ret = regmap_read(data->regmap, EC_ADDR_PWM_1, &value);
-				if (ret < 0)
-					return ret;
-
-				ret = regmap_write(data->regmap, EC_ADDR_MANUAL_FAN_CTRL,
-						   FAN_MODE_BOOST);
-				if (ret < 0)
-					return ret;
-
-				ret = regmap_write(data->regmap, EC_ADDR_PWM_1, value);
-				if (ret < 0)	/* Try to restore automatic fan control */
-					regmap_write(data->regmap, EC_ADDR_MANUAL_FAN_CTRL,
-						     FAN_MODE_USER | FAN_MODE_AUTO);
-
-				return ret;
+				return regmap_update_bits(data->regmap, EC_ADDR_MANUAL_FAN_CTRL,
+							  FAN_MODE_BOOST, 1);
 			case 2:
-				return regmap_write(data->regmap, EC_ADDR_MANUAL_FAN_CTRL,
-						    FAN_MODE_USER | FAN_MODE_AUTO);
+				return regmap_update_bits(data->regmap, EC_ADDR_MANUAL_FAN_CTRL,
+							  FAN_MODE_BOOST, 0);
 			default:
 				return -EOPNOTSUPP;
 			}
@@ -612,33 +551,16 @@ static const struct hwmon_chip_info uniwill_chip_info = {
 	.info = uniwill_info,
 };
 
-static void uniwill_disable_fan_control(void *context)
+static void uniwill_disable_manual_control(void *context)
 {
 	struct uniwill_data *data = context;
 
-	regmap_update_bits(data->regmap, EC_ADDR_AP_OEM, ENABLE_MANUAL_FAN_CTRL, 0);
+	regmap_update_bits(data->regmap, EC_ADDR_AP_OEM, ENABLE_MANUAL_CTRL, 0);
 }
 
 static int uniwill_hwmon_init(struct uniwill_data *data)
 {
 	struct device *hdev;
-	unsigned int value;
-	int ret;
-
-	ret = regmap_read(data->regmap, EC_ADDR_SUPPORT_1, &value);
-	if (ret < 0)
-		return ret;
-
-	if (value & FAN_BOOST || force_pwm_enable)
-		data->pwm_support = true;
-
-	ret = regmap_update_bits(data->regmap, EC_ADDR_AP_OEM, ENABLE_MANUAL_FAN_CTRL, 1);
-	if (ret < 0)
-		return ret;
-
-	ret = devm_add_action_or_reset(&data->wdev->dev, uniwill_disable_fan_control, data);
-	if (ret < 0)
-		return ret;
 
 	hdev = devm_hwmon_device_register_with_info(&data->wdev->dev, "uniwill", data,
 						    &uniwill_chip_info, NULL);
@@ -655,9 +577,13 @@ static int uniwill_ec_init(struct uniwill_data *data)
 	if (ret < 0)
 		return ret;
 
-	dev_dbg(&data->wdev->dev, "Project ID: %u\n", value & 0xFF);
+	dev_dbg(&data->wdev->dev, "Project ID: %u\n", value);
 
-	return 0;
+	ret = regmap_update_bits(data->regmap, EC_ADDR_AP_OEM, ENABLE_MANUAL_CTRL, 1);
+	if (ret < 0)
+		return ret;
+
+	return devm_add_action_or_reset(&data->wdev->dev, uniwill_disable_manual_control, data);
 }
 
 static int uniwill_probe(struct wmi_device *wdev, const void *context)
@@ -672,10 +598,6 @@ static int uniwill_probe(struct wmi_device *wdev, const void *context)
 
 	data->wdev = wdev;
 	dev_set_drvdata(&wdev->dev, data);
-
-	ret = devm_mutex_init(&wdev->dev, &data->pwm_lock);
-	if (ret < 0)
-		return ret;
 
 	regmap = devm_regmap_init(&wdev->dev, &uniwill_ec_bus, data, &uniwill_ec_config);
 	if (IS_ERR(regmap))
@@ -705,7 +627,7 @@ static int uniwill_suspend(struct device *dev)
 		return ret;
 
 	regcache_cache_bypass(data->regmap, true);
-	regmap_update_bits(data->regmap, EC_ADDR_AP_OEM, ENABLE_MANUAL_FAN_CTRL, 0);
+	regmap_update_bits(data->regmap, EC_ADDR_AP_OEM, ENABLE_MANUAL_CTRL, 0);
 	regcache_cache_bypass(data->regmap, false);
 
 	regcache_cache_only(data->regmap, true);
