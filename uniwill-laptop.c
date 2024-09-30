@@ -10,6 +10,7 @@
 #include <linux/acpi.h>
 #include <linux/bits.h>
 #include <linux/bitfield.h>
+#include <linux/container_of.h>
 #include <linux/debugfs.h>
 #include <linux/device.h>
 #include <linux/device/driver.h>
@@ -20,6 +21,7 @@
 #include <linux/minmax.h>
 #include <linux/module.h>
 #include <linux/mutex.h>
+#include <linux/platform_profile.h>
 #include <linux/pm.h>
 #include <linux/printk.h>
 #include <linux/regmap.h>
@@ -27,6 +29,8 @@
 #include <linux/wmi.h>
 
 #include <asm/unaligned.h>
+
+#include "uniwill-wmi.h"
 
 #define EC_ADDR_BAT_STATUS	0x0432
 #define BAT_DISCHARGING		BIT(0)
@@ -86,7 +90,7 @@
 #define EC_ADDR_MANUAL_FAN_CTRL	0x0751
 #define FAN_LEVEL_MASK		GENMASK(2, 0)
 #define FAN_MODE_TURBO		BIT(4)
-#define FAN_MODE_AUTO		BIT(5)
+#define FAN_MODE_HIGH		BIT(5)
 #define FAN_MODE_BOOST		BIT(6)
 #define FAN_MODE_USER		BIT(7)
 
@@ -217,6 +221,8 @@ struct uniwill_method_buffer {
 struct uniwill_data {
 	struct wmi_device *wdev;
 	struct regmap *regmap;
+	struct platform_profile_handler profile_handler;
+	struct notifier_block notifier;
 };
 
 static const char * const uniwill_temp_labels[] = {
@@ -399,6 +405,7 @@ static int uniwill_read(struct device *dev, enum hwmon_sensor_types type, u32 at
 {
 	struct uniwill_data *data = dev_get_drvdata(dev);
 	unsigned int value;
+	__be16 rpm;
 	int ret;
 
 	switch (type) {
@@ -422,10 +429,12 @@ static int uniwill_read(struct device *dev, enum hwmon_sensor_types type, u32 at
 	case hwmon_fan:
 		switch (channel) {
 		case 0:
-			ret = regmap_bulk_read(data->regmap, EC_ADDR_MAIN_FAN_RPM_1, &value, 2);
+			ret = regmap_bulk_read(data->regmap, EC_ADDR_MAIN_FAN_RPM_1, &rpm,
+					       sizeof(rpm));
 			break;
 		case 1:
-			ret = regmap_bulk_read(data->regmap, EC_ADDR_SECOND_FAN_RPM_1, &value, 2);
+			ret = regmap_bulk_read(data->regmap, EC_ADDR_SECOND_FAN_RPM_1, &rpm,
+					       sizeof(rpm));
 			break;
 		default:
 			return -EOPNOTSUPP;
@@ -434,7 +443,7 @@ static int uniwill_read(struct device *dev, enum hwmon_sensor_types type, u32 at
 		if (ret < 0)
 			return ret;
 
-		*val = be16_to_cpu(value);
+		*val = be16_to_cpu(rpm);
 		return 0;
 	case hwmon_pwm:
 		switch (attr) {
@@ -568,6 +577,102 @@ static int uniwill_hwmon_init(struct uniwill_data *data)
 	return PTR_ERR_OR_ZERO(hdev);
 }
 
+static int uniwill_platform_profile_get(struct platform_profile_handler *pprof,
+					enum platform_profile_option *profile)
+{
+	struct uniwill_data *data = container_of(pprof, struct uniwill_data, profile_handler);
+	unsigned int mask = FAN_MODE_USER | FAN_MODE_HIGH | FAN_MODE_TURBO;
+	unsigned int value;
+	int ret;
+
+	ret = regmap_read(data->regmap, EC_ADDR_MANUAL_FAN_CTRL, &value);
+	if (ret < 0)
+		return ret;
+
+	switch (value & mask) {
+	case (FAN_MODE_USER | FAN_MODE_HIGH):
+		return PLATFORM_PROFILE_BALANCED;
+	case 0x00:
+		return PLATFORM_PROFILE_BALANCED_PERFORMANCE;
+	case FAN_MODE_TURBO:
+		return PLATFORM_PROFILE_PERFORMANCE;
+	default:
+		return -EINVAL;
+	}
+}
+
+static int uniwill_platform_profile_set(struct platform_profile_handler *pprof,
+					enum platform_profile_option profile)
+{
+	struct uniwill_data *data = container_of(pprof, struct uniwill_data, profile_handler);
+	unsigned int mask = FAN_MODE_USER | FAN_MODE_HIGH | FAN_MODE_TURBO;
+	unsigned int value;
+
+	switch (profile) {
+	case PLATFORM_PROFILE_BALANCED:
+		value = FAN_MODE_USER | FAN_MODE_HIGH;
+		break;
+	case PLATFORM_PROFILE_BALANCED_PERFORMANCE:
+		value = 0x00;
+		break;
+	case PLATFORM_PROFILE_PERFORMANCE:
+		value = FAN_MODE_TURBO;
+		break;
+	default:
+		return -EINVAL;
+	}
+
+	return regmap_update_bits(data->regmap, EC_ADDR_MANUAL_FAN_CTRL, mask, value);
+}
+
+static int uniwill_wmi_notify_call(struct notifier_block *nb, unsigned long action, void *data)
+{
+	u32 *event = data;
+
+	if (*event != UNIWILL_OSD_PERF_MODE_CHANGED)
+		return NOTIFY_DONE;
+
+	platform_profile_cycle();
+
+	return NOTIFY_OK;
+}
+
+static void devm_platform_profile_remove(void *data)
+{
+	platform_profile_remove();
+}
+
+static int devm_platform_profile_register(struct device *dev, struct platform_profile_handler *pprof)
+{
+	 int ret;
+
+	ret = platform_profile_register(pprof);
+	if (ret < 0)
+		return ret;
+
+	return devm_add_action_or_reset(dev, devm_platform_profile_remove, NULL);
+}
+
+static int uniwill_platform_profile_init(struct uniwill_data *data)
+{
+	int ret;
+
+	set_bit(PLATFORM_PROFILE_BALANCED, data->profile_handler.choices);
+	set_bit(PLATFORM_PROFILE_BALANCED_PERFORMANCE, data->profile_handler.choices);
+	set_bit(PLATFORM_PROFILE_PERFORMANCE, data->profile_handler.choices);
+
+	data->profile_handler.profile_get = uniwill_platform_profile_get;
+	data->profile_handler.profile_set = uniwill_platform_profile_set;
+
+	ret = devm_platform_profile_register(&data->wdev->dev, &data->profile_handler);
+	if (ret < 0)
+		return ret;
+
+	data->notifier.notifier_call = uniwill_wmi_notify_call;
+
+	return devm_uniwill_wmi_register_notifier(&data->wdev->dev, &data->notifier);
+}
+
 static int uniwill_ec_init(struct uniwill_data *data)
 {
 	unsigned int value;
@@ -607,6 +712,10 @@ static int uniwill_probe(struct wmi_device *wdev, const void *context)
 	data->regmap = regmap;
 
 	ret = uniwill_ec_init(data);
+	if (ret < 0)
+		return ret;
+
+	ret = uniwill_platform_profile_init(data);
 	if (ret < 0)
 		return ret;
 
