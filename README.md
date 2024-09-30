@@ -3,10 +3,10 @@ Linux kernel driver for various Uniwill laptops. Keep in mind that this kernel m
 a prototype, you might seriously damage our laptop by loading this driver.
 
 ## Installation
-You can build the kernel module by simply executing `make`. Keep in mind that you need a recent enough linux kernel (>= 6.10.0)
+You can build the kernel modules by simply executing `make`. Keep in mind that you need a recent enough linux kernel (>= 6.10.0)
 and the linux kernel headers installed.
 
-You can then load the kernel module by executing `insmod uniwill-laptop.ko` with superuser privileges.
+You can then load the kernel modules by executing `insmod uniwill-wmi.ko` and `insmod uniwill-laptop.ko` with superuser privileges.
 
 ## Development
 
