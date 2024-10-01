@@ -106,13 +106,13 @@ int uniwill_wmi_register_notifier(struct notifier_block *nb)
 {
 	return blocking_notifier_chain_register(&uniwill_wmi_chain_head, nb);
 }
-EXPORT_SYMBOL_NS_GPL(uniwill_wmi_register_notifier, uniwill);
+EXPORT_SYMBOL_NS_GPL(uniwill_wmi_register_notifier, UNIWILL);
 
 int uniwill_wmi_unregister_notifier(struct notifier_block *nb)
 {
 	return blocking_notifier_chain_unregister(&uniwill_wmi_chain_head, nb);
 }
-EXPORT_SYMBOL_NS_GPL(uniwill_wmi_unregister_notifier, uniwill);
+EXPORT_SYMBOL_NS_GPL(uniwill_wmi_unregister_notifier, UNIWILL);
 
 static void devm_uniwill_wmi_unregister_notifier(void *data)
 {
@@ -131,7 +131,7 @@ int devm_uniwill_wmi_register_notifier(struct device *dev, struct notifier_block
 
 	return devm_add_action_or_reset(dev, devm_uniwill_wmi_unregister_notifier, nb);
 }
-EXPORT_SYMBOL_GPL(devm_uniwill_wmi_register_notifier);
+EXPORT_SYMBOL_NS_GPL(devm_uniwill_wmi_register_notifier, UNIWILL);
 
 static void uniwill_wmi_notify(struct wmi_device *wdev, union acpi_object *obj)
 {

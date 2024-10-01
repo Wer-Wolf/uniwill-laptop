@@ -783,3 +783,4 @@ module_wmi_driver(uniwill_driver);	// TODO DMI
 MODULE_AUTHOR("Armin Wolf <W_Armin@gmx.de>");
 MODULE_DESCRIPTION("Uniwill notebook driver");
 MODULE_LICENSE("GPL");
+MODULE_IMPORT_NS(UNIWILL);
