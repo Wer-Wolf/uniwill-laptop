@@ -129,7 +129,7 @@ int devm_uniwill_wmi_register_notifier(struct device *dev, struct notifier_block
 {
 	int ret;
 
-	ret = uniwill_wmi_unregister_notifier(nb);
+	ret = uniwill_wmi_register_notifier(nb);
 	if (ret < 0)
 		return ret;
 
