@@ -46,9 +46,13 @@ static const struct key_entry uniwill_wmi_keymap[] = {
 	{ KE_IGNORE,	UNIWILL_KEY_BRIGHTNESSUP,		{ KEY_BRIGHTNESSUP }},
 	{ KE_IGNORE,	UNIWILL_KEY_BRIGHTNESSDOWN,		{ KEY_BRIGHTNESSDOWN }},
 
-	/* Reported in automatic mode when rfkill state changes */
-	{ KE_SW,	UNIWILL_OSD_RADIOON,			{.sw = { SW_RFKILL_ALL, 1 }}},
-	{ KE_SW,	UNIWILL_OSD_RADIOOFF,			{.sw = { SW_RFKILL_ALL, 0 }}},
+	/*
+	 * Reported in automatic mode when rfkill state changes.
+	 * We ignore it since the EC is always switched into manual
+	 * mode by uniwill-laptop.
+	 */
+	{ KE_IGNORE,	UNIWILL_OSD_RADIOON,			{.sw = { SW_RFKILL_ALL, 1 }}},
+	{ KE_IGNORE,	UNIWILL_OSD_RADIOOFF,			{.sw = { SW_RFKILL_ALL, 0 }}},
 
 	/* Reported via keyboard controller */
 	{ KE_IGNORE,	UNIWILL_KEY_MUTE,			{ KEY_MUTE }},
