@@ -591,11 +591,14 @@ static int uniwill_platform_profile_get(struct platform_profile_handler *pprof,
 
 	switch (value & mask) {
 	case (FAN_MODE_USER | FAN_MODE_HIGH):
-		return PLATFORM_PROFILE_BALANCED;
+		*profile = PLATFORM_PROFILE_BALANCED;
+		return 0;
 	case 0x00:
-		return PLATFORM_PROFILE_BALANCED_PERFORMANCE;
+		*profile = PLATFORM_PROFILE_BALANCED_PERFORMANCE;
+		return 0;
 	case FAN_MODE_TURBO:
-		return PLATFORM_PROFILE_PERFORMANCE;
+		*profile = PLATFORM_PROFILE_PERFORMANCE;
+		return 0;
 	default:
 		return -EINVAL;
 	}
