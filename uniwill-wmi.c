@@ -38,7 +38,6 @@ static const struct key_entry uniwill_wmi_keymap[] = {
 	{ KE_IGNORE,	UNIWILL_KEY_NUMLOCK,			{ KEY_NUMLOCK }},
 	{ KE_IGNORE,	UNIWILL_KEY_SCROLLLOCK,			{ KEY_SCROLLLOCK }},
 
-	/* TODO */
 	{ KE_IGNORE,	UNIWILL_KEY_TOUCHPAD_ON,		{ KEY_TOUCHPAD_ON }},
 	{ KE_IGNORE,	UNIWILL_KEY_TOUCHPAD_OFF,		{ KEY_TOUCHPAD_OFF }},
 
@@ -48,8 +47,8 @@ static const struct key_entry uniwill_wmi_keymap[] = {
 
 	/*
 	 * Reported in automatic mode when rfkill state changes.
-	 * We ignore it since the EC is always switched into manual
-	 * mode by uniwill-laptop.
+	 * We ignore those events since uniwill-laptop always puts
+	 * the EC into manual mode.
 	 */
 	{ KE_IGNORE,	UNIWILL_OSD_RADIOON,			{.sw = { SW_RFKILL_ALL, 1 }}},
 	{ KE_IGNORE,	UNIWILL_OSD_RADIOOFF,			{.sw = { SW_RFKILL_ALL, 0 }}},
@@ -59,18 +58,15 @@ static const struct key_entry uniwill_wmi_keymap[] = {
 	{ KE_IGNORE,	UNIWILL_KEY_VOLUMEDOWN,			{ KEY_VOLUMEDOWN }},
 	{ KE_IGNORE,	UNIWILL_KEY_VOLUMEUP,			{ KEY_VOLUMEUP }},
 
-	/* TODO */
 	{ KE_IGNORE,	UNIWILL_OSD_LIGHTBAR_ON,		{ KEY_RESERVED }},
 	{ KE_IGNORE,	UNIWILL_OSD_LIGHTBAR_OFF,		{ KEY_RESERVED }},
 
-	/* TODO */
 	{ KE_KEY,	UNIWILL_OSD_KB_LED_LEVEL0,		{ KEY_KBDILLUMTOGGLE }},
 	{ KE_KEY,	UNIWILL_OSD_KB_LED_LEVEL1,		{ KEY_KBDILLUMTOGGLE }},
 	{ KE_KEY,	UNIWILL_OSD_KB_LED_LEVEL2,		{ KEY_KBDILLUMTOGGLE }},
 	{ KE_KEY,	UNIWILL_OSD_KB_LED_LEVEL3,		{ KEY_KBDILLUMTOGGLE }},
 	{ KE_KEY,	UNIWILL_OSD_KB_LED_LEVEL4,		{ KEY_KBDILLUMTOGGLE }},
 
-	/* TODO */
 	{ KE_IGNORE,	UNIWILL_OSD_SUPER_KEY_LOCK_ENABLE,	{ KEY_RESERVED }},
 	{ KE_IGNORE,	UNIWILL_OSD_SUPER_KEY_LOCK_DISABLE,	{ KEY_RESERVED }},
 
@@ -80,13 +76,11 @@ static const struct key_entry uniwill_wmi_keymap[] = {
 	 */
 	{ KE_KEY,	UNIWILL_KEY_RFKILL,			{ KEY_RFKILL }},
 
-	/* TODO */
 	{ KE_IGNORE,	UNIWILL_OSD_SUPER_KEY_LOCK_TOGGLE,	{ KEY_RESERVED }},
 	{ KE_IGNORE,	UNIWILL_OSD_LIGHTBAR_STATE_CHANGED,	{ KEY_RESERVED }},
 	{ KE_IGNORE,	UNIWILL_OSD_FAN_BOOST_STATE_CHANGED,	{ KEY_RESERVED }},
 	{ KE_IGNORE,	UNIWILL_OSD_DC_ADAPTER_CHANGED,		{ KEY_RESERVED }},
 
-	/* TODO */
 	{ KE_IGNORE,	UNIWILL_OSD_PERF_MODE_CHANGED,		{ KEY_RESERVED }},
 
 	/*
@@ -97,10 +91,8 @@ static const struct key_entry uniwill_wmi_keymap[] = {
 	{ KE_KEY,	UNIWILL_KEY_KBDILLUMUP,			{ KEY_KBDILLUMUP }},
 	{ KE_KEY,	UNIWILL_KEY_FN_LOCK,			{ KEY_FN_ESC }},
 
-	/* TODO */
 	{ KE_KEY,	UNIWILL_KEY_KBDILLUMTOGGLE,		{ KEY_KBDILLUMTOGGLE }},
 
-	/* TODO */
 	{ KE_IGNORE,	UNIWILL_OSD_KBD_BACKLIGHT_CHANGED,	{ KEY_RESERVED }},
 
 	{ KE_END }
@@ -148,7 +140,9 @@ static void uniwill_wmi_notify(struct wmi_device *wdev, union acpi_object *obj)
 
 	value = obj->integer.value;
 
-	ret = blocking_notifier_call_chain(&uniwill_wmi_chain_head, 0, &value);
+	dev_dbg(&wdev->dev, "Received WMI event %u\n", value);
+
+	ret = blocking_notifier_call_chain(&uniwill_wmi_chain_head, value, NULL);
 	if (ret == NOTIFY_BAD)
 		return;
 
@@ -191,7 +185,7 @@ static int uniwill_wmi_probe(struct wmi_device *wdev, const void *context)
  * We cannot fully trust this GUID since Uniwill just copied the WMI GUID
  * from the Windows driver example, and others probably did the same.
  *
- * Because of this we are forced to use a DMI table for autoloading.
+ * Because of this we cannot use this WMI GUID for autoloading.
  */
 static const struct wmi_device_id uniwill_wmi_id_table[] = {
 	{ UNIWILL_EVENT_GUID, NULL },
@@ -208,7 +202,7 @@ static struct wmi_driver uniwill_wmi_driver = {
 	.notify = uniwill_wmi_notify,
 	.no_singleton = true,
 };
-module_wmi_driver(uniwill_wmi_driver);	// TODO DMI
+module_wmi_driver(uniwill_wmi_driver);
 
 MODULE_AUTHOR("Armin Wolf <W_Armin@gmx.de>");
 MODULE_DESCRIPTION("Uniwill notebook hotkey driver");
