@@ -34,16 +34,16 @@ static BLOCKING_NOTIFIER_HEAD(uniwill_wmi_chain_head);
 
 static const struct key_entry uniwill_wmi_keymap[] = {
 	/* Reported via keyboard controller */
-	{ KE_IGNORE,	UNIWILL_KEY_CAPSLOCK,			{ KEY_CAPSLOCK }},
-	{ KE_IGNORE,	UNIWILL_KEY_NUMLOCK,			{ KEY_NUMLOCK }},
-	{ KE_IGNORE,	UNIWILL_KEY_SCROLLLOCK,			{ KEY_SCROLLLOCK }},
+	{ KE_IGNORE,	UNIWILL_OSD_CAPSLOCK,			{ KEY_CAPSLOCK }},
+	{ KE_IGNORE,	UNIWILL_OSD_NUMLOCK,			{ KEY_NUMLOCK }},
+	{ KE_IGNORE,	UNIWILL_OSD_SCROLLLOCK,			{ KEY_SCROLLLOCK }},
 
-	{ KE_IGNORE,	UNIWILL_KEY_TOUCHPAD_ON,		{ KEY_TOUCHPAD_ON }},
-	{ KE_IGNORE,	UNIWILL_KEY_TOUCHPAD_OFF,		{ KEY_TOUCHPAD_OFF }},
+	{ KE_IGNORE,	UNIWILL_OSD_TOUCHPAD_ON,		{ KEY_TOUCHPAD_ON }},
+	{ KE_IGNORE,	UNIWILL_OSD_TOUCHPAD_OFF,		{ KEY_TOUCHPAD_OFF }},
 
 	/* Reported via "video bus" */
-	{ KE_IGNORE,	UNIWILL_KEY_BRIGHTNESSUP,		{ KEY_BRIGHTNESSUP }},
-	{ KE_IGNORE,	UNIWILL_KEY_BRIGHTNESSDOWN,		{ KEY_BRIGHTNESSDOWN }},
+	{ KE_IGNORE,	UNIWILL_OSD_BRIGHTNESSUP,		{ KEY_BRIGHTNESSUP }},
+	{ KE_IGNORE,	UNIWILL_OSD_BRIGHTNESSDOWN,		{ KEY_BRIGHTNESSDOWN }},
 
 	/*
 	 * Reported in automatic mode when rfkill state changes.
@@ -54,9 +54,9 @@ static const struct key_entry uniwill_wmi_keymap[] = {
 	{ KE_IGNORE,	UNIWILL_OSD_RADIOOFF,			{.sw = { SW_RFKILL_ALL, 0 }}},
 
 	/* Reported via keyboard controller */
-	{ KE_IGNORE,	UNIWILL_KEY_MUTE,			{ KEY_MUTE }},
-	{ KE_IGNORE,	UNIWILL_KEY_VOLUMEDOWN,			{ KEY_VOLUMEDOWN }},
-	{ KE_IGNORE,	UNIWILL_KEY_VOLUMEUP,			{ KEY_VOLUMEUP }},
+	{ KE_IGNORE,	UNIWILL_OSD_MUTE,			{ KEY_MUTE }},
+	{ KE_IGNORE,	UNIWILL_OSD_VOLUMEDOWN,			{ KEY_VOLUMEDOWN }},
+	{ KE_IGNORE,	UNIWILL_OSD_VOLUMEUP,			{ KEY_VOLUMEUP }},
 
 	{ KE_IGNORE,	UNIWILL_OSD_LIGHTBAR_ON,		{ KEY_RESERVED }},
 	{ KE_IGNORE,	UNIWILL_OSD_LIGHTBAR_OFF,		{ KEY_RESERVED }},
@@ -74,24 +74,24 @@ static const struct key_entry uniwill_wmi_keymap[] = {
 	 * Not reported by other means when in manual mode,
 	 * handled automatically when in automatic mode
 	 */
-	{ KE_KEY,	UNIWILL_KEY_RFKILL,			{ KEY_RFKILL }},
+	{ KE_KEY,	UNIWILL_OSD_RFKILL,			{ KEY_RFKILL }},
 
 	{ KE_IGNORE,	UNIWILL_OSD_SUPER_KEY_LOCK_TOGGLE,	{ KEY_RESERVED }},
 	{ KE_IGNORE,	UNIWILL_OSD_LIGHTBAR_STATE_CHANGED,	{ KEY_RESERVED }},
 	{ KE_IGNORE,	UNIWILL_OSD_FAN_BOOST_STATE_CHANGED,	{ KEY_RESERVED }},
 	{ KE_IGNORE,	UNIWILL_OSD_DC_ADAPTER_CHANGED,		{ KEY_RESERVED }},
 
-	{ KE_IGNORE,	UNIWILL_OSD_PERF_MODE_CHANGED,		{ KEY_RESERVED }},
+	{ KE_IGNORE,	UNIWILL_OSD_PERFORMANCE_MODE_TOGGLE,	{ KEY_RESERVED }},
 
 	/*
 	 * Not reported by other means when in manual mode,
 	 * handled automatically when in automatic mode
 	 */
-	{ KE_KEY,	UNIWILL_KEY_KBDILLUMDOWN,		{ KEY_KBDILLUMDOWN }},
-	{ KE_KEY,	UNIWILL_KEY_KBDILLUMUP,			{ KEY_KBDILLUMUP }},
-	{ KE_KEY,	UNIWILL_KEY_FN_LOCK,			{ KEY_FN_ESC }},
+	{ KE_KEY,	UNIWILL_OSD_KBDILLUMDOWN,		{ KEY_KBDILLUMDOWN }},
+	{ KE_KEY,	UNIWILL_OSD_KBDILLUMUP,			{ KEY_KBDILLUMUP }},
+	{ KE_KEY,	UNIWILL_OSD_FN_LOCK,			{ KEY_FN_ESC }},
 
-	{ KE_KEY,	UNIWILL_KEY_KBDILLUMTOGGLE,		{ KEY_KBDILLUMTOGGLE }},
+	{ KE_KEY,	UNIWILL_OSD_KBDILLUMTOGGLE,		{ KEY_KBDILLUMTOGGLE }},
 
 	{ KE_IGNORE,	UNIWILL_OSD_KBD_BACKLIGHT_CHANGED,	{ KEY_RESERVED }},
 
@@ -102,13 +102,13 @@ int uniwill_wmi_register_notifier(struct notifier_block *nb)
 {
 	return blocking_notifier_chain_register(&uniwill_wmi_chain_head, nb);
 }
-EXPORT_SYMBOL_NS_GPL(uniwill_wmi_register_notifier, UNIWILL);
+EXPORT_SYMBOL_NS_GPL(uniwill_wmi_register_notifier, "UNIWILL");
 
 int uniwill_wmi_unregister_notifier(struct notifier_block *nb)
 {
 	return blocking_notifier_chain_unregister(&uniwill_wmi_chain_head, nb);
 }
-EXPORT_SYMBOL_NS_GPL(uniwill_wmi_unregister_notifier, UNIWILL);
+EXPORT_SYMBOL_NS_GPL(uniwill_wmi_unregister_notifier, "UNIWILL");
 
 static void devm_uniwill_wmi_unregister_notifier(void *data)
 {
@@ -127,7 +127,7 @@ int devm_uniwill_wmi_register_notifier(struct device *dev, struct notifier_block
 
 	return devm_add_action_or_reset(dev, devm_uniwill_wmi_unregister_notifier, nb);
 }
-EXPORT_SYMBOL_NS_GPL(devm_uniwill_wmi_register_notifier, UNIWILL);
+EXPORT_SYMBOL_NS_GPL(devm_uniwill_wmi_register_notifier, "UNIWILL");
 
 static void uniwill_wmi_notify(struct wmi_device *wdev, union acpi_object *obj)
 {
@@ -185,7 +185,8 @@ static int uniwill_wmi_probe(struct wmi_device *wdev, const void *context)
  * We cannot fully trust this GUID since Uniwill just copied the WMI GUID
  * from the Windows driver example, and others probably did the same.
  *
- * Because of this we cannot use this WMI GUID for autoloading.
+ * Because of this we cannot use this WMI GUID for autoloading. The uniwill-laptop
+ * driver will instead load this module as a dependency.
  */
 static const struct wmi_device_id uniwill_wmi_id_table[] = {
 	{ UNIWILL_EVENT_GUID, NULL },

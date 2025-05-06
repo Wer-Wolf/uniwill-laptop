@@ -10,30 +10,66 @@
 #include <linux/acpi.h>
 #include <linux/bits.h>
 #include <linux/bitfield.h>
-#include <linux/container_of.h>
 #include <linux/debugfs.h>
 #include <linux/device.h>
 #include <linux/device/driver.h>
+#include <linux/dmi.h>
 #include <linux/errno.h>
 #include <linux/fixp-arith.h>
 #include <linux/hwmon.h>
+#include <linux/hwmon-sysfs.h>
+#include <linux/init.h>
 #include <linux/kernel.h>
+#include <linux/kstrtox.h>
+#include <linux/list.h>
 #include <linux/minmax.h>
 #include <linux/module.h>
 #include <linux/mutex.h>
-#include <linux/platform_profile.h>
+#include <linux/notifier.h>
 #include <linux/pm.h>
 #include <linux/printk.h>
 #include <linux/regmap.h>
 #include <linux/types.h>
+#include <linux/unaligned.h>
+#include <linux/units.h>
 #include <linux/wmi.h>
 
-#include <asm/unaligned.h>
+#include <acpi/battery.h>
 
 #include "uniwill-wmi.h"
 
-#define EC_ADDR_BAT_STATUS		0x0432
+#define EC_ADDR_BAT_POWER_UNIT_1	0x0400
+
+#define EC_ADDR_BAT_POWER_UNIT_2	0x0401
+
+#define EC_ADDR_BAT_DESIGN_CAPACITY_1	0x0402
+
+#define EC_ADDR_BAT_DESIGN_CAPACITY_2	0x0403
+
+#define EC_ADDR_BAT_FULL_CAPACITY_1	0x0404
+
+#define EC_ADDR_BAT_FULL_CAPACITY_2	0x0405
+
+#define EC_ADDR_BAT_DESIGN_VOLTAGE_1	0x0408
+
+#define EC_ADDR_BAT_DESIGN_VOLTAGE_2	0x0409
+
+#define EC_ADDR_BAT_STATUS_1		0x0432
 #define BAT_DISCHARGING			BIT(0)
+
+#define EC_ADDR_BAT_STATUS_2		0x0433
+
+#define EC_ADDR_BAT_CURRENT_1		0x0434
+
+#define EC_ADDR_BAT_CURRENT_2		0x0435
+
+#define EC_ADDR_BAT_REMAIN_CAPACITY_1	0x0436
+
+#define EC_ADDR_BAT_REMAIN_CAPACITY_2	0x0437
+
+#define EC_ADDR_BAT_VOLTAGE_1		0x0438
+
+#define EC_ADDR_BAT_VOLTAGE_2		0x0439
 
 #define EC_ADDR_CPU_TEMP		0x043E
 
@@ -51,7 +87,11 @@
 #define WIFI_STATUS_ON			BIT(7)
 /* BIT(5) is also unset depending on the rfkill state (bluetooth?) */
 
-#define EC_ADDR_BAT_ALLERT		0x0494
+#define EC_ADDR_BAT_ALERT		0x0494
+
+#define EC_ADDR_BAT_CYCLE_COUNT_1	0x04A6
+
+#define EC_ADDR_BAT_CYCLE_COUNT_2	0x04A7
 
 #define EC_ADDR_PROJECT_ID		0x0740
 
@@ -97,6 +137,10 @@
 #define FAN_MODE_BOOST			BIT(6)
 #define FAN_MODE_USER			BIT(7)
 
+#define EC_ADDR_PWM_1			0x075B
+
+#define EC_ADDR_PWM_2			0x075C
+
 #define EC_ADDR_SUPPORT_1		0x0765
 #define AIRPLANE_MODE			BIT(0)
 #define GPS_SWITCH			BIT(1)
@@ -105,12 +149,12 @@
 #define SHORTCUT_KEY			BIT(4)
 #define SUPER_KEY_LOCK			BIT(5)
 #define LIGHTBAR			BIT(6)
-#define FAN_BOOST			BIT(7)	/* Seems to be unrelated to manual fan control */
+#define FAN_BOOST			BIT(7)
 
 #define EC_ADDR_SUPPORT_2		0x0766
 #define SILENT_MODE			BIT(0)
 #define USB_CHARGING			BIT(1)
-#define SINGLE_ZONE_KBD			BIT(2)
+#define RGB_KEYBOARD			BIT(2)
 #define CHINA_MODE			BIT(5)
 #define MY_BATTERY			BIT(6)
 
@@ -121,12 +165,15 @@
 #define TRIGGER_SILENT_MODE		BIT(3)
 #define TRIGGER_USB_CHARGING		BIT(4)
 #define RGB_APPLY_COLOR			BIT(5)
+#define RGB_LOGO_EFFECT			BIT(6)
 #define RGB_RAINBOW_EFFECT		BIT(7)
 
 #define EC_ADDR_SWITCH_STATUS		0x0768
 #define SUPER_KEY_LOCK_STATUS		BIT(0)
 #define LIGHTBAR_STATUS			BIT(1)
 #define FAN_BOOST_STATUS		BIT(2)
+#define MACRO_KEY_STATUS		BIT(3)
+#define MY_BAT_POWER_BAT_STATUS		BIT(4)
 
 #define EC_ADDR_RGB_RED			0x0769
 
@@ -190,20 +237,46 @@
 #define TOUCHPAD_TOGGLE_OFF		BIT(6)
 
 #define EC_ADDR_CHARGE_CTRL		0x07B9
-#define CHARGE_CTRL_MASK		GEMASK(6, 0)
+#define CHARGE_CTRL_MASK		GENMASK(6, 0)
 #define CHARGE_CTRL_REACHED		BIT(7)
+
+#define EC_ADDR_UNIVERSAL_FAN_CTRL	0x07C5
+#define SPLIT_TABLES			BIT(7)
+
+#define EC_ADDR_AP_OEM_6		0x07C6
+#define ENABLE_UNIVERSAL_FAN_CTRL	BIT(2)
+#define BATTERY_CHARGE_FULL_OVER_24H	BIT(3)
+#define BATTERY_ERM_STATUS_REACHED	BIT(4)
 
 #define EC_ADDR_CHARGE_PRIO		0x07CC
 #define CHARGING_PERFORMANCE		BIT(7)
 
-#define EC_ADDR_PWM_1			0x1804
+#define EC_ADDR_CPU_TEMP_END_TABLE	0x0F00
 
-#define EC_ADDR_PWM_2			0x1809
+#define EC_ADDR_CPU_TEMP_START_TABLE	0x0F10
+
+#define EC_ADDR_CPU_FAN_SPEED_TABLE	0x0F20
+
+#define EC_ADDR_GPU_TEMP_END_TABLE	0x0F30
+
+#define EC_ADDR_GPU_TEMP_START_TABLE	0x0F40
+
+#define EC_ADDR_GPU_FAN_SPEED_TABLE	0x0F50
+
+/*
+ * Those two registers technically allow for manual fan control,
+ * but are unstable on some models and are likely not meant to
+ * be used by applications.
+ */
+#define EC_ADDR_PWM_1_WRITEABLE		0x1804
+
+#define EC_ADDR_PWM_2_WRITEABLE		0x1809
 
 #define DRIVER_NAME	"uniwill"
 #define UNIWILL_GUID	"ABBC0F6F-8EA1-11D1-00A0-C90629100000"
 
 #define PWM_MAX			200
+#define FAN_TABLE_LENGTH	16
 
 enum uniwill_method {
 	UNIWILL_GET_ULONG	= 0x01,
@@ -223,9 +296,21 @@ struct uniwill_method_buffer {
 struct uniwill_data {
 	struct wmi_device *wdev;
 	struct regmap *regmap;
-	struct platform_profile_handler profile_handler;
-	struct notifier_block notifier;
+	struct acpi_battery_hook hook;
+	unsigned int last_charge_limit;
+	struct mutex battery_lock;	/* Protects the list of currently registered batteries */
+	struct list_head batteries;
+	struct notifier_block nb;
 };
+
+struct uniwill_battery_entry {
+	struct list_head head;
+	struct power_supply *battery;
+};
+
+static bool force;
+module_param_unsafe(force, bool, 0);
+MODULE_PARM_DESC(force, "Force loading without checking for supported devices\n");
 
 static const char * const uniwill_temp_labels[] = {
 	"CPU",
@@ -330,9 +415,7 @@ static bool uniwill_writeable_reg(struct device *dev, unsigned int reg)
 {
 	switch (reg) {
 	case EC_ADDR_AP_OEM:
-	case EC_ADDR_MANUAL_FAN_CTRL:
-	case EC_ADDR_PWM_1:
-	case EC_ADDR_PWM_2:
+	case EC_ADDR_CHARGE_CTRL:
 		return true;
 	default:
 		return false;
@@ -348,12 +431,12 @@ static bool uniwill_readable_reg(struct device *dev, unsigned int reg)
 	case EC_ADDR_MAIN_FAN_RPM_2:
 	case EC_ADDR_SECOND_FAN_RPM_1:
 	case EC_ADDR_SECOND_FAN_RPM_2:
+	case EC_ADDR_BAT_ALERT:
 	case EC_ADDR_PROJECT_ID:
 	case EC_ADDR_AP_OEM:
-	case EC_ADDR_MANUAL_FAN_CTRL:
-	case EC_ADDR_SUPPORT_1:
 	case EC_ADDR_PWM_1:
 	case EC_ADDR_PWM_2:
+	case EC_ADDR_CHARGE_CTRL:
 		return true;
 	default:
 		return false;
@@ -369,6 +452,10 @@ static bool uniwill_volatile_reg(struct device *dev, unsigned int reg)
 	case EC_ADDR_MAIN_FAN_RPM_2:
 	case EC_ADDR_SECOND_FAN_RPM_1:
 	case EC_ADDR_SECOND_FAN_RPM_2:
+	case EC_ADDR_BAT_ALERT:
+	case EC_ADDR_PWM_1:
+	case EC_ADDR_PWM_2:
+	case EC_ADDR_CHARGE_CTRL:
 		return true;
 	default:
 		return false;
@@ -397,7 +484,7 @@ static umode_t uniwill_is_visible(const void *drvdata, enum hwmon_sensor_types t
 	case hwmon_fan:
 		return 0444;
 	case hwmon_pwm:
-		return 0644;
+		return 0444;
 	default:
 		return 0;
 	}
@@ -449,35 +536,19 @@ static int uniwill_read(struct device *dev, enum hwmon_sensor_types type, u32 at
 		*val = be16_to_cpu(rpm);
 		return 0;
 	case hwmon_pwm:
-		switch (attr) {
-		case hwmon_pwm_input:
-			switch (channel) {
-			case 0:
-				ret = regmap_read(data->regmap, EC_ADDR_PWM_1, &value);
-				break;
-			case 1:
-				ret = regmap_read(data->regmap, EC_ADDR_PWM_2, &value);
-				break;
-			default:
-				return -EOPNOTSUPP;
-			}
-
-			*val = fixp_linear_interpolate(0, 0, PWM_MAX, U8_MAX, value);
-			return 0;
-		case hwmon_pwm_enable:
-			ret = regmap_read(data->regmap, EC_ADDR_MANUAL_FAN_CTRL, &value);
-			if (ret < 0)
-				return ret;
-
-			if (value & FAN_MODE_BOOST)
-				*val = 1;
-			else
-				*val = 2;
-
-			return 0;
+		switch (channel) {
+		case 0:
+			ret = regmap_read(data->regmap, EC_ADDR_PWM_1, &value);
+			break;
+		case 1:
+			ret = regmap_read(data->regmap, EC_ADDR_PWM_2, &value);
+			break;
 		default:
 			return -EOPNOTSUPP;
 		}
+
+		*val = fixp_linear_interpolate(0, 0, PWM_MAX, U8_MAX, value);
+		return 0;
 	default:
 		return -EOPNOTSUPP;
 	}
@@ -498,50 +569,10 @@ static int uniwill_read_string(struct device *dev, enum hwmon_sensor_types type,
 	}
 }
 
-static int uniwill_write(struct device *dev, enum hwmon_sensor_types type, u32 attr, int channel,
-			 long val)
-{
-	struct uniwill_data *data = dev_get_drvdata(dev);
-	unsigned int value;
-
-	switch (type) {
-	case hwmon_pwm:
-		switch (attr) {
-		case hwmon_pwm_input:
-			value = fixp_linear_interpolate(0, 0, U8_MAX, PWM_MAX,
-							clamp_val(val, 0, U8_MAX));
-			switch (channel) {
-			case 0:
-				return regmap_write(data->regmap, EC_ADDR_PWM_1, value);
-			case 1:
-				return regmap_write(data->regmap, EC_ADDR_PWM_2, value);
-			default:
-				return -EOPNOTSUPP;
-			}
-		case hwmon_pwm_enable:
-			switch (val) {
-			case 1:
-				return regmap_update_bits(data->regmap, EC_ADDR_MANUAL_FAN_CTRL,
-							  FAN_MODE_BOOST, FAN_MODE_BOOST);
-			case 2:
-				return regmap_update_bits(data->regmap, EC_ADDR_MANUAL_FAN_CTRL,
-							  FAN_MODE_BOOST, 0);
-			default:
-				return -EOPNOTSUPP;
-			}
-		default:
-			return -EOPNOTSUPP;
-		}
-	default:
-		return -EOPNOTSUPP;
-	}
-}
-
 static const struct hwmon_ops uniwill_ops = {
 	.is_visible = uniwill_is_visible,
 	.read = uniwill_read,
 	.read_string = uniwill_read_string,
-	.write = uniwill_write,
 };
 
 static const struct hwmon_channel_info * const uniwill_info[] = {
@@ -553,8 +584,8 @@ static const struct hwmon_channel_info * const uniwill_info[] = {
 			   HWMON_F_INPUT | HWMON_F_LABEL,
 			   HWMON_F_INPUT | HWMON_F_LABEL),
 	HWMON_CHANNEL_INFO(pwm,
-			   HWMON_PWM_INPUT | HWMON_PWM_ENABLE,
-			   HWMON_PWM_INPUT | HWMON_PWM_ENABLE),
+			   HWMON_PWM_INPUT,
+			   HWMON_PWM_INPUT),
 	NULL
 };
 
@@ -562,13 +593,6 @@ static const struct hwmon_chip_info uniwill_chip_info = {
 	.ops = &uniwill_ops,
 	.info = uniwill_info,
 };
-
-static void uniwill_disable_manual_control(void *context)
-{
-	struct uniwill_data *data = context;
-
-	regmap_update_bits(data->regmap, EC_ADDR_AP_OEM, ENABLE_MANUAL_CTRL, 0);
-}
 
 static int uniwill_hwmon_init(struct uniwill_data *data)
 {
@@ -580,85 +604,192 @@ static int uniwill_hwmon_init(struct uniwill_data *data)
 	return PTR_ERR_OR_ZERO(hdev);
 }
 
-static int uniwill_platform_profile_get(struct platform_profile_handler *pprof,
-					enum platform_profile_option *profile)
+static int uniwill_get_property(struct power_supply *psy, const struct power_supply_ext *ext,
+				void *drvdata, enum power_supply_property psp,
+				union power_supply_propval *val)
 {
-	struct uniwill_data *data = container_of(pprof, struct uniwill_data, profile_handler);
-	unsigned int mask = FAN_MODE_USER | FAN_MODE_HIGH | FAN_MODE_TURBO;
-	unsigned int value;
+	struct uniwill_data *data = drvdata;
+	union power_supply_propval prop;
+	unsigned int regval;
 	int ret;
 
-	ret = regmap_read(data->regmap, EC_ADDR_MANUAL_FAN_CTRL, &value);
+	switch (psp) {
+	case POWER_SUPPLY_PROP_HEALTH:
+		ret = power_supply_get_property(psy, POWER_SUPPLY_PROP_PRESENT, &prop);
+		if (ret < 0)
+			return ret;
+
+		if (!prop.intval) {
+			val->intval = POWER_SUPPLY_HEALTH_NO_BATTERY;
+			return 0;
+		}
+
+		ret = power_supply_get_property(psy, POWER_SUPPLY_PROP_STATUS, &prop);
+		if (ret < 0)
+			return ret;
+
+		if (prop.intval == POWER_SUPPLY_STATUS_UNKNOWN) {
+			val->intval = POWER_SUPPLY_HEALTH_UNKNOWN;
+			return 0;
+		}
+
+		ret = regmap_read(data->regmap, EC_ADDR_BAT_ALERT, &regval);
+		if (ret < 0)
+			return ret;
+
+		if (regval) {
+			/* Charging issue */
+			val->intval = POWER_SUPPLY_HEALTH_UNSPEC_FAILURE;
+			return 0;
+		}
+
+		val->intval = POWER_SUPPLY_HEALTH_GOOD;
+		return 0;
+	case POWER_SUPPLY_PROP_CHARGE_CONTROL_END_THRESHOLD:
+		ret = regmap_read(data->regmap, EC_ADDR_CHARGE_CTRL, &regval);
+		if (ret < 0)
+			return ret;
+
+		val->intval = clamp_val(FIELD_GET(CHARGE_CTRL_MASK, regval), 0, 100);
+		return 0;
+	default:
+		return -EINVAL;
+	}
+}
+
+static int uniwill_set_property(struct power_supply *psy, const struct power_supply_ext *ext,
+				void *drvdata, enum power_supply_property psp,
+				const union power_supply_propval *val)
+{
+	struct uniwill_data *data = drvdata;
+
+	switch (psp) {
+	case POWER_SUPPLY_PROP_CHARGE_CONTROL_END_THRESHOLD:
+		if (val->intval < 1 || val->intval > 100)
+			return -EINVAL;
+
+		return regmap_update_bits(data->regmap, EC_ADDR_CHARGE_CTRL, CHARGE_CTRL_MASK,
+					  val->intval);
+	default:
+		return -EINVAL;
+	}
+}
+
+static int uniwill_property_is_writeable(struct power_supply *psy,
+					 const struct power_supply_ext *ext, void *drvdata,
+					 enum power_supply_property psp)
+{
+	if (psp == POWER_SUPPLY_PROP_CHARGE_CONTROL_END_THRESHOLD)
+		return true;
+
+	return false;
+}
+
+static const enum power_supply_property uniwill_properties[] = {
+	POWER_SUPPLY_PROP_HEALTH,
+	POWER_SUPPLY_PROP_CHARGE_CONTROL_END_THRESHOLD,
+};
+
+static const struct power_supply_ext uniwill_extension = {
+	.name = DRIVER_NAME,
+	.properties = uniwill_properties,
+	.num_properties = ARRAY_SIZE(uniwill_properties),
+	.get_property = uniwill_get_property,
+	.set_property = uniwill_set_property,
+	.property_is_writeable = uniwill_property_is_writeable,
+};
+
+static int uniwill_add_battery(struct power_supply *battery, struct acpi_battery_hook *hook)
+{
+	struct uniwill_data *data = container_of(hook, struct uniwill_data, hook);
+	struct uniwill_battery_entry *entry;
+	int ret;
+
+	entry = kzalloc(sizeof(*entry), GFP_KERNEL);
+	if (!entry)
+		return -ENOMEM;
+
+	ret = power_supply_register_extension(battery, &uniwill_extension, &data->wdev->dev, data);
+	if (ret < 0) {
+		kfree(entry);
+		return ret;
+	}
+
+	scoped_guard(mutex, &data->battery_lock) {
+		entry->battery = battery;
+		list_add(&entry->head, &data->batteries);
+	}
+
+	return 0;
+}
+
+static int uniwill_remove_battery(struct power_supply *battery, struct acpi_battery_hook *hook)
+{
+	struct uniwill_data *data = container_of(hook, struct uniwill_data, hook);
+	struct uniwill_battery_entry *entry, *tmp;
+
+	scoped_guard(mutex, &data->battery_lock) {
+		list_for_each_entry_safe(entry, tmp, &data->batteries, head) {
+			if (entry->battery == battery) {
+				list_del(&entry->head);
+				kfree(entry);
+				break;
+			}
+		}
+	}
+
+	power_supply_unregister_extension(battery, &uniwill_extension);
+
+	return 0;
+}
+
+static int uniwill_battery_init(struct uniwill_data *data)
+{
+	int ret;
+
+	ret = devm_mutex_init(&data->wdev->dev, &data->battery_lock);
 	if (ret < 0)
 		return ret;
 
-	switch (value & mask) {
-	case (FAN_MODE_USER | FAN_MODE_HIGH):
-		*profile = PLATFORM_PROFILE_BALANCED;
-		return 0;
-	case 0x00:
-		*profile = PLATFORM_PROFILE_BALANCED_PERFORMANCE;
-		return 0;
-	case FAN_MODE_TURBO:
-		*profile = PLATFORM_PROFILE_PERFORMANCE;
-		return 0;
-	default:
-		return -EINVAL;
-	}
+	INIT_LIST_HEAD(&data->batteries);
+	data->hook.name = "Uniwill Battery Extension";
+	data->hook.add_battery = uniwill_add_battery;
+	data->hook.remove_battery = uniwill_remove_battery;
+
+	return devm_battery_hook_register(&data->wdev->dev, &data->hook);
 }
 
-static int uniwill_platform_profile_set(struct platform_profile_handler *pprof,
-					enum platform_profile_option profile)
+static int uniwill_notifier_call(struct notifier_block *nb, unsigned long action, void *dummy)
 {
-	struct uniwill_data *data = container_of(pprof, struct uniwill_data, profile_handler);
-	unsigned int mask = FAN_MODE_USER | FAN_MODE_HIGH | FAN_MODE_TURBO;
-	unsigned int value;
+	struct uniwill_data *data = container_of(nb, struct uniwill_data, nb);
+	struct uniwill_battery_entry *entry;
 
-	switch (profile) {
-	case PLATFORM_PROFILE_BALANCED:
-		value = FAN_MODE_USER | FAN_MODE_HIGH;
-		break;
-	case PLATFORM_PROFILE_BALANCED_PERFORMANCE:
-		value = 0x00;
-		break;
-	case PLATFORM_PROFILE_PERFORMANCE:
-		value = FAN_MODE_TURBO;
-		break;
+	switch (action) {
+	case UNIWILL_OSD_BATTERY_ALERT:
+		scoped_guard(mutex, &data->battery_lock) {
+			list_for_each_entry(entry, &data->batteries, head) {
+				power_supply_changed(entry->battery);
+			}
+		}
+
+		return NOTIFY_OK;
 	default:
-		return -EINVAL;
-	}
-
-	return regmap_update_bits(data->regmap, EC_ADDR_MANUAL_FAN_CTRL, mask, value);
-}
-
-static int uniwill_wmi_notify_call(struct notifier_block *nb, unsigned long action, void *data)
-{
-	if (action != UNIWILL_OSD_PERF_MODE_CHANGED)
 		return NOTIFY_DONE;
-
-	platform_profile_cycle();
-
-	return NOTIFY_OK;
+	}
 }
 
-static int uniwill_platform_profile_init(struct uniwill_data *data)
+static int uniwill_notifier_init(struct uniwill_data *data)
 {
-	int ret;
+	data->nb.notifier_call = uniwill_notifier_call;
 
-	set_bit(PLATFORM_PROFILE_BALANCED, data->profile_handler.choices);
-	set_bit(PLATFORM_PROFILE_BALANCED_PERFORMANCE, data->profile_handler.choices);
-	set_bit(PLATFORM_PROFILE_PERFORMANCE, data->profile_handler.choices);
+	return devm_uniwill_wmi_register_notifier(&data->wdev->dev, &data->nb);
+}
 
-	data->profile_handler.profile_get = uniwill_platform_profile_get;
-	data->profile_handler.profile_set = uniwill_platform_profile_set;
+static void uniwill_disable_manual_control(void *context)
+{
+	struct uniwill_data *data = context;
 
-	ret = devm_platform_profile_register(&data->wdev->dev, &data->profile_handler);
-	if (ret < 0)
-		return ret;
-
-	data->notifier.notifier_call = uniwill_wmi_notify_call;
-
-	return devm_uniwill_wmi_register_notifier(&data->wdev->dev, &data->notifier);
+	regmap_clear_bits(data->regmap, EC_ADDR_AP_OEM, ENABLE_MANUAL_CTRL);
 }
 
 static int uniwill_ec_init(struct uniwill_data *data)
@@ -672,8 +803,7 @@ static int uniwill_ec_init(struct uniwill_data *data)
 
 	dev_dbg(&data->wdev->dev, "Project ID: %u\n", value);
 
-	ret = regmap_update_bits(data->regmap, EC_ADDR_AP_OEM, ENABLE_MANUAL_CTRL,
-				 ENABLE_MANUAL_CTRL);
+	ret = regmap_set_bits(data->regmap, EC_ADDR_AP_OEM, ENABLE_MANUAL_CTRL);
 	if (ret < 0)
 		return ret;
 
@@ -703,18 +833,22 @@ static int uniwill_probe(struct wmi_device *wdev, const void *context)
 	if (ret < 0)
 		return ret;
 
-	ret = uniwill_platform_profile_init(data);
+	ret = uniwill_battery_init(data);
 	if (ret < 0)
 		return ret;
 
-	return uniwill_hwmon_init(data);
+	ret = uniwill_hwmon_init(data);
+	if (ret < 0)
+		return ret;
+
+	return uniwill_notifier_init(data);
 }
 
 static void uniwill_shutdown(struct wmi_device *wdev)
 {
 	struct uniwill_data *data = dev_get_drvdata(&wdev->dev);
 
-	regmap_update_bits(data->regmap, EC_ADDR_AP_OEM, ENABLE_MANUAL_CTRL, 0);
+	regmap_clear_bits(data->regmap, EC_ADDR_AP_OEM, ENABLE_MANUAL_CTRL);
 }
 
 static int uniwill_suspend(struct device *dev)
@@ -731,8 +865,19 @@ static int uniwill_suspend(struct device *dev)
 	if (ret < 0)
 		return ret;
 
+	/*
+	 * Save the current charge limit in order to restore it during resume.
+	 * We cannot use the regmap code for that since this register needs to
+	 * be declared as volatile due to CHARGE_CTRL_REACHED.
+	 */
+	ret = regmap_read(data->regmap, EC_ADDR_CHARGE_CTRL, &value);
+	if (ret < 0)
+		return ret;
+
+	data->last_charge_limit = FIELD_GET(CHARGE_CTRL_MASK, value);
+
 	regcache_cache_bypass(data->regmap, true);
-	regmap_update_bits(data->regmap, EC_ADDR_AP_OEM, ENABLE_MANUAL_CTRL, 0);
+	regmap_clear_bits(data->regmap, EC_ADDR_AP_OEM, ENABLE_MANUAL_CTRL);
 	regcache_cache_bypass(data->regmap, false);
 
 	regcache_cache_only(data->regmap, true);
@@ -744,10 +889,16 @@ static int uniwill_suspend(struct device *dev)
 static int uniwill_resume(struct device *dev)
 {
 	struct uniwill_data *data = dev_get_drvdata(dev);
+	int ret;
 
 	regcache_cache_only(data->regmap, false);
 
-	return regcache_sync(data->regmap);
+	ret = regcache_sync(data->regmap);
+	if (ret < 0)
+		return ret;
+
+	return regmap_update_bits(data->regmap, EC_ADDR_CHARGE_CTRL, CHARGE_CTRL_MASK,
+				  data->last_charge_limit);
 }
 
 static DEFINE_SIMPLE_DEV_PM_OPS(uniwill_pm_ops, uniwill_suspend, uniwill_resume);
@@ -774,9 +925,39 @@ static struct wmi_driver uniwill_driver = {
 	.shutdown = uniwill_shutdown,
 	.no_singleton = true,
 };
-module_wmi_driver(uniwill_driver);
+
+static const struct dmi_system_id uniwill_dmi_table[] __initconst = {
+	{
+		.ident = "Intel NUC x15",
+		.matches = {
+			DMI_EXACT_MATCH(DMI_SYS_VENDOR, "Intel(R) Client Systems"),
+			DMI_EXACT_MATCH(DMI_PRODUCT_NAME, "LAPAC71H"),
+		},
+	},
+	{ }
+};
+MODULE_DEVICE_TABLE(dmi, uniwill_dmi_table);
+
+static int __init uniwill_init(void)
+{
+	if (!dmi_first_match(uniwill_dmi_table)) {
+		if (!force)
+			return -ENODEV;
+
+		pr_warn("Loading on a potentially unsupported device\n");
+	}
+
+	return wmi_driver_register(&uniwill_driver);
+}
+module_init(uniwill_init);
+
+static void __exit uniwill_exit(void)
+{
+	wmi_driver_unregister(&uniwill_driver);
+}
+module_exit(uniwill_exit);
 
 MODULE_AUTHOR("Armin Wolf <W_Armin@gmx.de>");
 MODULE_DESCRIPTION("Uniwill notebook driver");
 MODULE_LICENSE("GPL");
-MODULE_IMPORT_NS(UNIWILL);
+MODULE_IMPORT_NS("UNIWILL");
