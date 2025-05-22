@@ -29,6 +29,9 @@
 #include <linux/pm.h>
 #include <linux/printk.h>
 #include <linux/regmap.h>
+#include <linux/string.h>
+#include <linux/string_choices.h>
+#include <linux/sysfs.h>
 #include <linux/types.h>
 #include <linux/unaligned.h>
 #include <linux/units.h>
@@ -141,6 +144,7 @@
 
 #define EC_ADDR_PWM_2			0x075C
 
+/* Unreliable */
 #define EC_ADDR_SUPPORT_1		0x0765
 #define AIRPLANE_MODE			BIT(0)
 #define GPS_SWITCH			BIT(1)
@@ -312,6 +316,15 @@ static bool force;
 module_param_unsafe(force, bool, 0);
 MODULE_PARM_DESC(force, "Force loading without checking for supported devices\n");
 
+/*
+ * "disable" is placed on index 0 so that the return value of sysfs_match_string()
+ * directly translates into a boolean value.
+ */
+static const char * const uniwill_enable_disable_strings[] = {
+	[0] = "disable",
+	[1] = "enable",
+};
+
 static const char * const uniwill_temp_labels[] = {
 	"CPU",
 	"GPU",
@@ -415,6 +428,9 @@ static bool uniwill_writeable_reg(struct device *dev, unsigned int reg)
 {
 	switch (reg) {
 	case EC_ADDR_AP_OEM:
+	case EC_ADDR_BIOS_OEM:
+	case EC_ADDR_TRIGGER:
+	case EC_ADDR_OEM_4:
 	case EC_ADDR_CHARGE_CTRL:
 		return true;
 	default:
@@ -434,8 +450,12 @@ static bool uniwill_readable_reg(struct device *dev, unsigned int reg)
 	case EC_ADDR_BAT_ALERT:
 	case EC_ADDR_PROJECT_ID:
 	case EC_ADDR_AP_OEM:
+	case EC_ADDR_BIOS_OEM:
 	case EC_ADDR_PWM_1:
 	case EC_ADDR_PWM_2:
+	case EC_ADDR_TRIGGER:
+	case EC_ADDR_SWITCH_STATUS:
+	case EC_ADDR_OEM_4:
 	case EC_ADDR_CHARGE_CTRL:
 		return true;
 	default:
@@ -489,6 +509,128 @@ static umode_t uniwill_is_visible(const void *drvdata, enum hwmon_sensor_types t
 		return 0;
 	}
 }
+
+static ssize_t fn_lock_store(struct device *dev, struct device_attribute *attr, const char *buf,
+			     size_t count)
+{
+	struct uniwill_data *data = dev_get_drvdata(dev);
+	unsigned int value;
+	int ret;
+
+	ret = sysfs_match_string(uniwill_enable_disable_strings, buf);
+	if (ret < 0)
+		return ret;
+
+	if (ret)
+		value = FN_LOCK_STATUS;
+	else
+		value = 0;
+
+	ret = regmap_update_bits(data->regmap, EC_ADDR_BIOS_OEM, FN_LOCK_STATUS, value);
+	if (ret < 0)
+		return ret;
+
+	return count;
+}
+
+static ssize_t fn_lock_show(struct device *dev, struct device_attribute *attr, char *buf)
+{
+	struct uniwill_data *data = dev_get_drvdata(dev);
+	unsigned int value;
+	int ret;
+
+	ret = regmap_read(data->regmap, EC_ADDR_BIOS_OEM, &value);
+	if (ret < 0)
+		return ret;
+
+	return sysfs_emit(buf, "%s\n", str_enable_disable(value & FN_LOCK_STATUS));
+}
+
+static DEVICE_ATTR_RW(fn_lock);
+
+static ssize_t super_key_lock_store(struct device *dev, struct device_attribute *attr,
+				    const char *buf, size_t count)
+{
+	struct uniwill_data *data = dev_get_drvdata(dev);
+	unsigned int value;
+	int ret;
+
+	ret = sysfs_match_string(uniwill_enable_disable_strings, buf);
+	if (ret < 0)
+		return ret;
+
+	if (ret)
+		value = TRIGGER_SUPER_KEY_LOCK;
+	else
+		value = 0;
+
+	ret = regmap_update_bits(data->regmap, EC_ADDR_TRIGGER, TRIGGER_SUPER_KEY_LOCK, value);
+	if (ret < 0)
+		return ret;
+
+	return count;
+}
+
+static ssize_t super_key_lock_show(struct device *dev, struct device_attribute *attr, char *buf)
+{
+	struct uniwill_data *data = dev_get_drvdata(dev);
+	unsigned int value;
+	int ret;
+
+	ret = regmap_read(data->regmap, EC_ADDR_SWITCH_STATUS, &value);
+	if (ret < 0)
+		return ret;
+
+	return sysfs_emit(buf, "%s\n", str_enable_disable(value & SUPER_KEY_LOCK_STATUS));
+}
+
+static DEVICE_ATTR_RW(super_key_lock);
+
+static ssize_t touchpad_toggle_store(struct device *dev, struct device_attribute *attr,
+				     const char *buf, size_t count)
+{
+	struct uniwill_data *data = dev_get_drvdata(dev);
+	unsigned int value;
+	int ret;
+
+	ret = sysfs_match_string(uniwill_enable_disable_strings, buf);
+	if (ret < 0)
+		return ret;
+
+	if (ret)
+		value = 0;
+	else
+		value = TOUCHPAD_TOGGLE_OFF;
+
+	ret = regmap_update_bits(data->regmap, EC_ADDR_OEM_4, TOUCHPAD_TOGGLE_OFF, value);
+	if (ret < 0)
+		return ret;
+
+	return count;
+}
+
+static ssize_t touchpad_toggle_show(struct device *dev, struct device_attribute *attr, char *buf)
+{
+	struct uniwill_data *data = dev_get_drvdata(dev);
+	unsigned int value;
+	int ret;
+
+	ret = regmap_read(data->regmap, EC_ADDR_OEM_4, &value);
+	if (ret < 0)
+		return ret;
+
+	return sysfs_emit(buf, "%s\n", str_enable_disable(!(value & TOUCHPAD_TOGGLE_OFF)));
+}
+
+static DEVICE_ATTR_RW(touchpad_toggle);
+
+static struct attribute *uniwill_attrs[] = {
+	&dev_attr_fn_lock.attr,
+	&dev_attr_super_key_lock.attr,
+	&dev_attr_touchpad_toggle.attr,
+	NULL
+};
+ATTRIBUTE_GROUPS(uniwill);
 
 static int uniwill_read(struct device *dev, enum hwmon_sensor_types type, u32 attr, int channel,
 			long *val)
@@ -917,6 +1059,7 @@ static const struct wmi_device_id uniwill_id_table[] = {
 static struct wmi_driver uniwill_driver = {
 	.driver = {
 		.name = DRIVER_NAME,
+		.dev_groups = uniwill_groups,
 		.probe_type = PROBE_PREFER_ASYNCHRONOUS,
 		.pm = pm_sleep_ptr(&uniwill_pm_ops),
 	},
@@ -932,6 +1075,13 @@ static const struct dmi_system_id uniwill_dmi_table[] __initconst = {
 		.matches = {
 			DMI_EXACT_MATCH(DMI_SYS_VENDOR, "Intel(R) Client Systems"),
 			DMI_EXACT_MATCH(DMI_PRODUCT_NAME, "LAPAC71H"),
+		},
+	},
+	{
+		.ident = "Intel NUC x15",
+		.matches = {
+			DMI_EXACT_MATCH(DMI_SYS_VENDOR, "Intel(R) Client Systems"),
+			DMI_EXACT_MATCH(DMI_PRODUCT_NAME, "LAPKC71F"),
 		},
 	},
 	{ }

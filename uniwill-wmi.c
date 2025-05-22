@@ -36,64 +36,32 @@ static const struct key_entry uniwill_wmi_keymap[] = {
 	/* Reported via keyboard controller */
 	{ KE_IGNORE,	UNIWILL_OSD_CAPSLOCK,			{ KEY_CAPSLOCK }},
 	{ KE_IGNORE,	UNIWILL_OSD_NUMLOCK,			{ KEY_NUMLOCK }},
-	{ KE_IGNORE,	UNIWILL_OSD_SCROLLLOCK,			{ KEY_SCROLLLOCK }},
 
-	{ KE_IGNORE,	UNIWILL_OSD_TOUCHPAD_ON,		{ KEY_TOUCHPAD_ON }},
-	{ KE_IGNORE,	UNIWILL_OSD_TOUCHPAD_OFF,		{ KEY_TOUCHPAD_OFF }},
+	/* Reported when the user locks/unlocks the super key */
+	{ KE_IGNORE,	UNIWILL_OSD_SUPER_KEY_LOCK_ENABLE,	{ KEY_UNKNOWN }},
+	{ KE_IGNORE,	UNIWILL_OSD_SUPER_KEY_LOCK_DISABLE,	{ KEY_UNKNOWN }},
 
-	/* Reported via "video bus" */
-	{ KE_IGNORE,	UNIWILL_OSD_BRIGHTNESSUP,		{ KEY_BRIGHTNESSUP }},
-	{ KE_IGNORE,	UNIWILL_OSD_BRIGHTNESSDOWN,		{ KEY_BRIGHTNESSDOWN }},
-
-	/*
-	 * Reported in automatic mode when rfkill state changes.
-	 * We ignore those events since uniwill-laptop always puts
-	 * the EC into manual mode.
-	 */
-	{ KE_IGNORE,	UNIWILL_OSD_RADIOON,			{.sw = { SW_RFKILL_ALL, 1 }}},
-	{ KE_IGNORE,	UNIWILL_OSD_RADIOOFF,			{.sw = { SW_RFKILL_ALL, 0 }}},
-
-	/* Reported via keyboard controller */
-	{ KE_IGNORE,	UNIWILL_OSD_MUTE,			{ KEY_MUTE }},
-	{ KE_IGNORE,	UNIWILL_OSD_VOLUMEDOWN,			{ KEY_VOLUMEDOWN }},
-	{ KE_IGNORE,	UNIWILL_OSD_VOLUMEUP,			{ KEY_VOLUMEUP }},
-
-	{ KE_IGNORE,	UNIWILL_OSD_LIGHTBAR_ON,		{ KEY_RESERVED }},
-	{ KE_IGNORE,	UNIWILL_OSD_LIGHTBAR_OFF,		{ KEY_RESERVED }},
-
-	{ KE_KEY,	UNIWILL_OSD_KB_LED_LEVEL0,		{ KEY_KBDILLUMTOGGLE }},
-	{ KE_KEY,	UNIWILL_OSD_KB_LED_LEVEL1,		{ KEY_KBDILLUMTOGGLE }},
-	{ KE_KEY,	UNIWILL_OSD_KB_LED_LEVEL2,		{ KEY_KBDILLUMTOGGLE }},
-	{ KE_KEY,	UNIWILL_OSD_KB_LED_LEVEL3,		{ KEY_KBDILLUMTOGGLE }},
-	{ KE_KEY,	UNIWILL_OSD_KB_LED_LEVEL4,		{ KEY_KBDILLUMTOGGLE }},
-
-	{ KE_IGNORE,	UNIWILL_OSD_SUPER_KEY_LOCK_ENABLE,	{ KEY_RESERVED }},
-	{ KE_IGNORE,	UNIWILL_OSD_SUPER_KEY_LOCK_DISABLE,	{ KEY_RESERVED }},
-
-	/*
-	 * Not reported by other means when in manual mode,
-	 * handled automatically when in automatic mode
-	 */
+	/* Reported in manual mode when toggling the airplane mode status */
 	{ KE_KEY,	UNIWILL_OSD_RFKILL,			{ KEY_RFKILL }},
 
-	{ KE_IGNORE,	UNIWILL_OSD_SUPER_KEY_LOCK_TOGGLE,	{ KEY_RESERVED }},
-	{ KE_IGNORE,	UNIWILL_OSD_LIGHTBAR_STATE_CHANGED,	{ KEY_RESERVED }},
-	{ KE_IGNORE,	UNIWILL_OSD_FAN_BOOST_STATE_CHANGED,	{ KEY_RESERVED }},
-	{ KE_IGNORE,	UNIWILL_OSD_DC_ADAPTER_CHANGED,		{ KEY_RESERVED }},
+	/* Reported when user wants to cycle the platform profile */
+	{ KE_IGNORE,	UNIWILL_OSD_PERFORMANCE_MODE_TOGGLE,	{ KEY_UNKNOWN }},
 
-	{ KE_IGNORE,	UNIWILL_OSD_PERFORMANCE_MODE_TOGGLE,	{ KEY_RESERVED }},
+	/* Reported when the user wants to toggle the microphone mute status */
+	{ KE_KEY,	UNIWILL_OSD_MIC_MUTE,			{ KEY_MICMUTE }},
 
-	/*
-	 * Not reported by other means when in manual mode,
-	 * handled automatically when in automatic mode
-	 */
-	{ KE_KEY,	UNIWILL_OSD_KBDILLUMDOWN,		{ KEY_KBDILLUMDOWN }},
-	{ KE_KEY,	UNIWILL_OSD_KBDILLUMUP,			{ KEY_KBDILLUMUP }},
-	{ KE_KEY,	UNIWILL_OSD_FN_LOCK,			{ KEY_FN_ESC }},
+	/* Reported when the user locks/unlocks the Fn key */
+	{ KE_IGNORE,	UNIWILL_OSD_FN_LOCK,			{ KEY_FN_ESC }},
 
+	/* Reported when the user wants to toggle the brightness of the keyboard */
 	{ KE_KEY,	UNIWILL_OSD_KBDILLUMTOGGLE,		{ KEY_KBDILLUMTOGGLE }},
 
-	{ KE_IGNORE,	UNIWILL_OSD_KBD_BACKLIGHT_CHANGED,	{ KEY_RESERVED }},
+	/* FIXME: find out the exact meaning of those events */
+	{ KE_IGNORE,	UNIWILL_OSD_BAT_CHARGE_FULL_24_H,	{ KEY_UNKNOWN }},
+	{ KE_IGNORE,	UNIWILL_OSD_BAT_ERM_UPDATE,		{ KEY_UNKNOWN }},
+
+	/* Reported when the user wants to toggle the benchmark mode status */
+	{ KE_IGNORE,	UNIWILL_OSD_BENCHMARK_MODE_TOGGLE,	{ KEY_UNKNOWN }},
 
 	{ KE_END }
 };
