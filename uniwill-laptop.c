@@ -10,6 +10,7 @@
 #include <linux/acpi.h>
 #include <linux/bits.h>
 #include <linux/bitfield.h>
+#include <linux/cleanup.h>
 #include <linux/debugfs.h>
 #include <linux/device.h>
 #include <linux/device/driver.h>
@@ -21,6 +22,9 @@
 #include <linux/init.h>
 #include <linux/kernel.h>
 #include <linux/kstrtox.h>
+#include <linux/leds.h>
+#include <linux/led-class-multicolor.h>
+#include <linux/limits.h>
 #include <linux/list.h>
 #include <linux/minmax.h>
 #include <linux/module.h>
@@ -118,17 +122,18 @@
 
 #define EC_ADDR_MAX_TGP			0x0746
 
-#define EC_ADDR_LIGHTBAR_CTRL		0x0748
-#define LIGHTBAR_POWER_SAFE		BIT(1)
+#define EC_ADDR_LIGHTBAR_AC_CTRL	0x0748
+#define LIGHTBAR_APP_EXISTS		BIT(0)
+#define LIGHTBAR_POWER_SAVE		BIT(1)
 #define LIGHTBAR_S0_OFF			BIT(2)
-#define LIGHTBAR_S3_OFF			BIT(3)
-#define LIGHTBAR_RAINBOW		BIT(7)
+#define LIGHTBAR_S3_OFF			BIT(3)	// Breathing animation when suspended
+#define LIGHTBAR_WELCOME		BIT(7)	// Rainbow animation
 
-#define EC_ADDR_LIGHTBAR_RED		0x0749
+#define EC_ADDR_LIGHTBAR_AC_RED		0x0749
 
-#define EC_ADDR_LIGHTBAR_GREEN		0x074A
+#define EC_ADDR_LIGHTBAR_AC_GREEN	0x074A
 
-#define EC_ADDR_LIGHTBAR_BLUE		0x074B
+#define EC_ADDR_LIGHTBAR_AC_BLUE	0x074B
 
 #define EC_ADDR_BIOS_OEM		0x074E
 #define FN_LOCK_STATUS			BIT(4)
@@ -255,6 +260,15 @@
 #define EC_ADDR_CHARGE_PRIO		0x07CC
 #define CHARGING_PERFORMANCE		BIT(7)
 
+/* Same bits as EC_ADDR_LIGHTBAR_AC_CTRL except LIGHTBAR_S3_OFF */
+#define EC_ADDR_LIGHTBAR_BAT_CTRL	0x07E2
+
+#define EC_ADDR_LIGHTBAR_BAT_RED	0x07E3
+
+#define EC_ADDR_LIGHTBAR_BAT_GREEN	0x07E4
+
+#define EC_ADDR_LIGHTBAR_BAT_BLUE	0x07E5
+
 #define EC_ADDR_CPU_TEMP_END_TABLE	0x0F00
 
 #define EC_ADDR_CPU_TEMP_START_TABLE	0x0F10
@@ -282,6 +296,8 @@
 #define PWM_MAX			200
 #define FAN_TABLE_LENGTH	16
 
+#define LED_CHANNELS	3
+
 enum uniwill_method {
 	UNIWILL_GET_ULONG	= 0x01,
 	UNIWILL_SET_ULONG	= 0x02,
@@ -303,7 +319,11 @@ struct uniwill_data {
 	struct acpi_battery_hook hook;
 	unsigned int last_charge_limit;
 	struct mutex battery_lock;	/* Protects the list of currently registered batteries */
+	unsigned int last_switch_status;
+	struct mutex super_key_lock;	/* Protects the toggling of the super key lock state */
 	struct list_head batteries;
+	struct led_classdev_mc led_mc_cdev;
+	struct mc_subled led_mc_subled_info[LED_CHANNELS];
 	struct notifier_block nb;
 };
 
@@ -428,10 +448,18 @@ static bool uniwill_writeable_reg(struct device *dev, unsigned int reg)
 {
 	switch (reg) {
 	case EC_ADDR_AP_OEM:
+	case EC_ADDR_LIGHTBAR_AC_CTRL:
+	case EC_ADDR_LIGHTBAR_AC_RED:
+	case EC_ADDR_LIGHTBAR_AC_GREEN:
+	case EC_ADDR_LIGHTBAR_AC_BLUE:
 	case EC_ADDR_BIOS_OEM:
 	case EC_ADDR_TRIGGER:
 	case EC_ADDR_OEM_4:
 	case EC_ADDR_CHARGE_CTRL:
+	case EC_ADDR_LIGHTBAR_BAT_CTRL:
+	case EC_ADDR_LIGHTBAR_BAT_RED:
+	case EC_ADDR_LIGHTBAR_BAT_GREEN:
+	case EC_ADDR_LIGHTBAR_BAT_BLUE:
 		return true;
 	default:
 		return false;
@@ -450,6 +478,10 @@ static bool uniwill_readable_reg(struct device *dev, unsigned int reg)
 	case EC_ADDR_BAT_ALERT:
 	case EC_ADDR_PROJECT_ID:
 	case EC_ADDR_AP_OEM:
+	case EC_ADDR_LIGHTBAR_AC_CTRL:
+	case EC_ADDR_LIGHTBAR_AC_RED:
+	case EC_ADDR_LIGHTBAR_AC_GREEN:
+	case EC_ADDR_LIGHTBAR_AC_BLUE:
 	case EC_ADDR_BIOS_OEM:
 	case EC_ADDR_PWM_1:
 	case EC_ADDR_PWM_2:
@@ -457,6 +489,10 @@ static bool uniwill_readable_reg(struct device *dev, unsigned int reg)
 	case EC_ADDR_SWITCH_STATUS:
 	case EC_ADDR_OEM_4:
 	case EC_ADDR_CHARGE_CTRL:
+	case EC_ADDR_LIGHTBAR_BAT_CTRL:
+	case EC_ADDR_LIGHTBAR_BAT_RED:
+	case EC_ADDR_LIGHTBAR_BAT_GREEN:
+	case EC_ADDR_LIGHTBAR_BAT_BLUE:
 		return true;
 	default:
 		return false;
@@ -475,6 +511,8 @@ static bool uniwill_volatile_reg(struct device *dev, unsigned int reg)
 	case EC_ADDR_BAT_ALERT:
 	case EC_ADDR_PWM_1:
 	case EC_ADDR_PWM_2:
+	case EC_ADDR_TRIGGER:
+	case EC_ADDR_SWITCH_STATUS:
 	case EC_ADDR_CHARGE_CTRL:
 		return true;
 	default:
@@ -559,12 +597,21 @@ static ssize_t super_key_lock_store(struct device *dev, struct device_attribute 
 	if (ret < 0)
 		return ret;
 
-	if (ret)
-		value = TRIGGER_SUPER_KEY_LOCK;
-	else
-		value = 0;
+	guard(mutex)(&data->super_key_lock);
 
-	ret = regmap_update_bits(data->regmap, EC_ADDR_TRIGGER, TRIGGER_SUPER_KEY_LOCK, value);
+	ret = regmap_read(data->regmap, EC_ADDR_SWITCH_STATUS, &value);
+	if (ret < 0)
+		return ret;
+
+	/*
+	 * We can only toggle the super key lock, so we return early if the setting
+	 * is already in the correct state.
+	 */
+	if (ret == !(value & SUPER_KEY_LOCK_STATUS))
+		return count;
+
+	ret = regmap_write_bits(data->regmap, EC_ADDR_TRIGGER, TRIGGER_SUPER_KEY_LOCK,
+				TRIGGER_SUPER_KEY_LOCK);
 	if (ret < 0)
 		return ret;
 
@@ -581,7 +628,7 @@ static ssize_t super_key_lock_show(struct device *dev, struct device_attribute *
 	if (ret < 0)
 		return ret;
 
-	return sysfs_emit(buf, "%s\n", str_enable_disable(value & SUPER_KEY_LOCK_STATUS));
+	return sysfs_emit(buf, "%s\n", str_enable_disable(!(value & SUPER_KEY_LOCK_STATUS)));
 }
 
 static DEVICE_ATTR_RW(super_key_lock);
@@ -744,6 +791,124 @@ static int uniwill_hwmon_init(struct uniwill_data *data)
 						    &uniwill_chip_info, NULL);
 
 	return PTR_ERR_OR_ZERO(hdev);
+}
+
+static const unsigned int uniwill_led_channel_to_bat_reg[LED_CHANNELS] = {
+	EC_ADDR_LIGHTBAR_BAT_RED,
+	EC_ADDR_LIGHTBAR_BAT_GREEN,
+	EC_ADDR_LIGHTBAR_BAT_BLUE,
+};
+
+static const unsigned int uniwill_led_channel_to_ac_reg[LED_CHANNELS] = {
+	EC_ADDR_LIGHTBAR_AC_RED,
+	EC_ADDR_LIGHTBAR_AC_GREEN,
+	EC_ADDR_LIGHTBAR_AC_BLUE,
+};
+
+static int uniwill_led_brightness_set(struct led_classdev *led_cdev, enum led_brightness brightness)
+{
+	struct led_classdev_mc *led_mc_cdev = lcdev_to_mccdev(led_cdev);
+	struct uniwill_data *data = container_of(led_mc_cdev, struct uniwill_data, led_mc_cdev);
+	unsigned int value;
+	int ret;
+
+	ret = led_mc_calc_color_components(led_mc_cdev, brightness);
+	if (ret < 0)
+		return ret;
+
+	for (int i = 0; i < LED_CHANNELS; i++) {
+		/* Prevent the brightness values from overflowing */
+		value = min(U8_MAX, data->led_mc_subled_info[i].brightness);
+		ret = regmap_write(data->regmap, uniwill_led_channel_to_ac_reg[i], value);
+		if (ret < 0)
+			return ret;
+
+		ret = regmap_write(data->regmap, uniwill_led_channel_to_bat_reg[i], value);
+		if (ret < 0)
+			return ret;
+	}
+
+	if (brightness)
+		value = 0;
+	else
+		value = LIGHTBAR_S0_OFF;
+
+	ret = regmap_update_bits(data->regmap, EC_ADDR_LIGHTBAR_AC_CTRL, LIGHTBAR_S0_OFF, value);
+	if (ret < 0)
+		return ret;
+
+	return regmap_update_bits(data->regmap, EC_ADDR_LIGHTBAR_BAT_CTRL, LIGHTBAR_S0_OFF, value);
+}
+
+#define LIGHTBAR_MASK	(LIGHTBAR_APP_EXISTS | LIGHTBAR_S0_OFF | LIGHTBAR_S3_OFF | LIGHTBAR_WELCOME)
+
+static int uniwill_led_init(struct uniwill_data *data)
+{
+	struct led_init_data init_data = {
+		.devicename = DRIVER_NAME,
+		.default_label = "multicolor:" LED_FUNCTION_STATUS,
+		.devname_mandatory = true,
+	};
+	unsigned int color_indices[3] = {
+		LED_COLOR_ID_RED,
+		LED_COLOR_ID_GREEN,
+		LED_COLOR_ID_BLUE,
+	};
+	unsigned int value;
+	int ret;
+
+	/*
+	 * The EC has separate lightbar settings for AC and battery mode,
+	 * so we have to ensure that both settings are the same.
+	 */
+	ret = regmap_read(data->regmap, EC_ADDR_LIGHTBAR_AC_CTRL, &value);
+	if (ret < 0)
+		return ret;
+
+	/*
+	 * We currently do not support the two animation modes, so we need to
+	 * disable both here.
+	 */
+	value |= LIGHTBAR_APP_EXISTS | LIGHTBAR_S3_OFF;
+	value &= ~LIGHTBAR_WELCOME;
+	ret = regmap_write(data->regmap, EC_ADDR_LIGHTBAR_AC_CTRL, value);
+	if (ret < 0)
+		return ret;
+
+	ret = regmap_update_bits(data->regmap, EC_ADDR_LIGHTBAR_BAT_CTRL, LIGHTBAR_MASK, value);
+	if (ret < 0)
+		return ret;
+
+	data->led_mc_cdev.led_cdev.color = LED_COLOR_ID_MULTI;
+	data->led_mc_cdev.led_cdev.max_brightness = U8_MAX;
+	data->led_mc_cdev.led_cdev.flags = LED_REJECT_NAME_CONFLICT;
+	data->led_mc_cdev.led_cdev.brightness_set_blocking = uniwill_led_brightness_set;
+
+	if (value & LIGHTBAR_S0_OFF)
+		data->led_mc_cdev.led_cdev.brightness = 0;
+	else
+		data->led_mc_cdev.led_cdev.brightness = U8_MAX;
+
+	for (int i = 0; i < LED_CHANNELS; i++) {
+		data->led_mc_subled_info[i].color_index = color_indices[i];
+
+		ret = regmap_read(data->regmap, uniwill_led_channel_to_ac_reg[i], &value);
+		if (ret < 0)
+			return ret;
+
+		ret = regmap_write(data->regmap, uniwill_led_channel_to_bat_reg[i], value);
+		if (ret < 0)
+			return ret;
+
+		data->led_mc_subled_info[i].intensity = value;
+		data->led_mc_subled_info[i].channel = i;
+	}
+
+	data->led_mc_cdev.subled_info = data->led_mc_subled_info;
+	data->led_mc_cdev.num_colors = LED_CHANNELS;
+
+	return devm_led_classdev_multicolor_register_ext(&data->wdev->dev, &data->led_mc_cdev,
+							 &init_data);
 }
 
 static int uniwill_get_property(struct power_supply *psy, const struct power_supply_ext *ext,
@@ -970,12 +1135,19 @@ static int uniwill_probe(struct wmi_device *wdev, const void *context)
 		return PTR_ERR(regmap);
 
 	data->regmap = regmap;
+	ret = devm_mutex_init(&wdev->dev, &data->super_key_lock);
+	if (ret < 0)
+		return ret;
 
 	ret = uniwill_ec_init(data);
 	if (ret < 0)
 		return ret;
 
 	ret = uniwill_battery_init(data);
+	if (ret < 0)
+		return ret;
+
+	ret = uniwill_led_init(data);
 	if (ret < 0)
 		return ret;
 
@@ -1000,10 +1172,10 @@ static int uniwill_suspend(struct device *dev)
 	int ret;
 
 	/*
-	 * Make sure the EC_ADDR_AP_OEM register in the regmap cache is current
-	 * before bypassing it.
+	 * The EC_ADDR_SWITCH_STATUS is maked as volatile, so we have to restore it
+	 * ourself.
 	 */
-	ret = regmap_read(data->regmap, EC_ADDR_AP_OEM, &value);
+	ret = regmap_read(data->regmap, EC_ADDR_SWITCH_STATUS, &data->last_switch_status);
 	if (ret < 0)
 		return ret;
 
@@ -1018,10 +1190,6 @@ static int uniwill_suspend(struct device *dev)
 
 	data->last_charge_limit = FIELD_GET(CHARGE_CTRL_MASK, value);
 
-	regcache_cache_bypass(data->regmap, true);
-	regmap_clear_bits(data->regmap, EC_ADDR_AP_OEM, ENABLE_MANUAL_CTRL);
-	regcache_cache_bypass(data->regmap, false);
-
 	regcache_cache_only(data->regmap, true);
 	regcache_mark_dirty(data->regmap);
 
@@ -1031,6 +1199,7 @@ static int uniwill_suspend(struct device *dev)
 static int uniwill_resume(struct device *dev)
 {
 	struct uniwill_data *data = dev_get_drvdata(dev);
+	unsigned int value;
 	int ret;
 
 	regcache_cache_only(data->regmap, false);
@@ -1039,8 +1208,20 @@ static int uniwill_resume(struct device *dev)
 	if (ret < 0)
 		return ret;
 
-	return regmap_update_bits(data->regmap, EC_ADDR_CHARGE_CTRL, CHARGE_CTRL_MASK,
-				  data->last_charge_limit);
+	ret = regmap_update_bits(data->regmap, EC_ADDR_CHARGE_CTRL, CHARGE_CTRL_MASK,
+				 data->last_charge_limit);
+	if (ret < 0)
+		return ret;
+
+	ret = regmap_read(data->regmap, EC_ADDR_SWITCH_STATUS, &value);
+	if (ret < 0)
+		return ret;
+
+	if ((data->last_switch_status & SUPER_KEY_LOCK_STATUS) == (value & SUPER_KEY_LOCK_STATUS))
+		return 0;
+
+	return regmap_write_bits(data->regmap, EC_ADDR_TRIGGER, TRIGGER_SUPER_KEY_LOCK,
+				 TRIGGER_SUPER_KEY_LOCK);
 }
 
 static DEFINE_SIMPLE_DEV_PM_OPS(uniwill_pm_ops, uniwill_suspend, uniwill_resume);
