@@ -296,7 +296,15 @@
 #define PWM_MAX			200
 #define FAN_TABLE_LENGTH	16
 
-#define LED_CHANNELS	3
+#define LED_CHANNELS		3
+#define LED_MAX_BRIGHTNESS	200
+
+#define UNIWILL_FEATURE_FN_LOCK		BIT(0)
+#define UNIWILL_FEATURE_SUPER_KEY_LOCK	BIT(1)
+#define UNIWILL_FEATURE_TOUCHPAD_TOGGLE BIT(2)
+#define UNIWILL_FEATURE_LIGHTBAR	BIT(3)
+#define UNIWILL_FEATURE_BATTERY		BIT(4)
+#define UNIWILL_FEATURE_HWMON		BIT(5)
 
 enum uniwill_method {
 	UNIWILL_GET_ULONG	= 0x01,
@@ -317,7 +325,7 @@ struct uniwill_data {
 	struct wmi_device *wdev;
 	struct regmap *regmap;
 	struct acpi_battery_hook hook;
-	unsigned int last_charge_limit;
+	unsigned int last_charge_ctrl;
 	struct mutex battery_lock;	/* Protects the list of currently registered batteries */
 	unsigned int last_switch_status;
 	struct mutex super_key_lock;	/* Protects the toggling of the super key lock state */
@@ -335,6 +343,9 @@ struct uniwill_battery_entry {
 static bool force;
 module_param_unsafe(force, bool, 0);
 MODULE_PARM_DESC(force, "Force loading without checking for supported devices\n");
+
+/* Feature bitmask since the associated registers are not reliable */
+static uintptr_t supported_features;
 
 /*
  * "disable" is placed on index 0 so that the return value of sysfs_match_string()
@@ -533,21 +544,6 @@ static const struct regmap_config uniwill_ec_config = {
 	.use_single_write = true,
 };
 
-static umode_t uniwill_is_visible(const void *drvdata, enum hwmon_sensor_types type, u32 attr,
-				  int channel)
-{
-	switch (type) {
-	case hwmon_temp:
-		return 0444;
-	case hwmon_fan:
-		return 0444;
-	case hwmon_pwm:
-		return 0444;
-	default:
-		return 0;
-	}
-}
-
 static ssize_t fn_lock_store(struct device *dev, struct device_attribute *attr, const char *buf,
 			     size_t count)
 {
@@ -671,13 +667,133 @@ static ssize_t touchpad_toggle_show(struct device *dev, struct device_attribute 
 
 static DEVICE_ATTR_RW(touchpad_toggle);
 
+static ssize_t rainbow_animation_store(struct device *dev, struct device_attribute *attr,
+				       const char *buf, size_t count)
+{
+	struct uniwill_data *data = dev_get_drvdata(dev);
+	unsigned int value;
+	int ret;
+
+	ret = sysfs_match_string(uniwill_enable_disable_strings, buf);
+	if (ret < 0)
+		return ret;
+
+	if (ret)
+		value = LIGHTBAR_WELCOME;
+	else
+		value = 0;
+
+	ret = regmap_update_bits(data->regmap, EC_ADDR_LIGHTBAR_AC_CTRL, LIGHTBAR_WELCOME, value);
+	if (ret < 0)
+		return ret;
+
+	ret = regmap_update_bits(data->regmap, EC_ADDR_LIGHTBAR_BAT_CTRL, LIGHTBAR_WELCOME, value);
+	if (ret < 0)
+		return ret;
+
+	return count;
+}
+
+static ssize_t rainbow_animation_show(struct device *dev, struct device_attribute *attr, char *buf)
+{
+	struct uniwill_data *data = dev_get_drvdata(dev);
+	unsigned int value;
+	int ret;
+
+	ret = regmap_read(data->regmap, EC_ADDR_LIGHTBAR_AC_CTRL, &value);
+	if (ret < 0)
+		return ret;
+
+	return sysfs_emit(buf, "%s\n", str_enable_disable(value & LIGHTBAR_WELCOME));
+}
+
+static DEVICE_ATTR_RW(rainbow_animation);
+
+static ssize_t breathing_in_suspend_store(struct device *dev, struct device_attribute *attr,
+					  const char *buf, size_t count)
+{
+	struct uniwill_data *data = dev_get_drvdata(dev);
+	unsigned int value;
+	int ret;
+
+	ret = sysfs_match_string(uniwill_enable_disable_strings, buf);
+	if (ret < 0)
+		return ret;
+
+	if (ret)
+		value = 0;
+	else
+		value = LIGHTBAR_S3_OFF;
+
+	ret = regmap_update_bits(data->regmap, EC_ADDR_LIGHTBAR_AC_CTRL, LIGHTBAR_S3_OFF, value);
+	if (ret < 0)
+		return ret;
+
+	return count;
+}
+
+static ssize_t breathing_in_suspend_show(struct device *dev, struct device_attribute *attr,
+					 char *buf)
+{
+	struct uniwill_data *data = dev_get_drvdata(dev);
+	unsigned int value;
+	int ret;
+
+	ret = regmap_read(data->regmap, EC_ADDR_LIGHTBAR_AC_CTRL, &value);
+	if (ret < 0)
+		return ret;
+
+	return sysfs_emit(buf, "%s\n", str_enable_disable(!(value & LIGHTBAR_S3_OFF)));
+}
+
+static DEVICE_ATTR_RW(breathing_in_suspend);
+
 static struct attribute *uniwill_attrs[] = {
+	/* Keyboard-related */
 	&dev_attr_fn_lock.attr,
 	&dev_attr_super_key_lock.attr,
 	&dev_attr_touchpad_toggle.attr,
+	/* Lightbar-related */
+	&dev_attr_rainbow_animation.attr,
+	&dev_attr_breathing_in_suspend.attr,
 	NULL
 };
-ATTRIBUTE_GROUPS(uniwill);
+
+static umode_t uniwill_attr_is_visible(struct kobject *kobj, struct attribute *attr, int n)
+{
+	if (attr == &dev_attr_fn_lock.attr) {
+		if (supported_features & UNIWILL_FEATURE_FN_LOCK)
+			return attr->mode;
+	}
+
+	if (attr == &dev_attr_super_key_lock.attr) {
+		if (supported_features & UNIWILL_FEATURE_SUPER_KEY_LOCK)
+			return attr->mode;
+	}
+
+	if (attr == &dev_attr_touchpad_toggle.attr) {
+		if (supported_features & UNIWILL_FEATURE_TOUCHPAD_TOGGLE)
+			return attr->mode;
+	}
+
+	if (attr == &dev_attr_rainbow_animation.attr ||
+	    attr == &dev_attr_breathing_in_suspend.attr) {
+		if (supported_features & UNIWILL_FEATURE_LIGHTBAR)
+			return attr->mode;
+	}
+
+	return 0;
+}
+
+static const struct attribute_group uniwill_group = {
+	.is_visible = uniwill_attr_is_visible,
+	.attrs = uniwill_attrs,
+};
+
+static const struct attribute_group *uniwill_groups[] = {
+	&uniwill_group,
+	NULL
+};
 
 static int uniwill_read(struct device *dev, enum hwmon_sensor_types type, u32 attr, int channel,
 			long *val)
@@ -759,7 +875,7 @@ static int uniwill_read_string(struct device *dev, enum hwmon_sensor_types type,
 }
 
 static const struct hwmon_ops uniwill_ops = {
-	.is_visible = uniwill_is_visible,
+	.visible = 0444,
 	.read = uniwill_read,
 	.read_string = uniwill_read_string,
 };
@@ -786,6 +902,9 @@ static const struct hwmon_chip_info uniwill_chip_info = {
 static int uniwill_hwmon_init(struct uniwill_data *data)
 {
 	struct device *hdev;
+
+	if (!(supported_features & UNIWILL_FEATURE_HWMON))
+		return 0;
 
 	hdev = devm_hwmon_device_register_with_info(&data->wdev->dev, "uniwill", data,
 						    &uniwill_chip_info, NULL);
@@ -818,7 +937,7 @@ static int uniwill_led_brightness_set(struct led_classdev *led_cdev, enum led_br
 
 	for (int i = 0; i < LED_CHANNELS; i++) {
 		/* Prevent the brightness values from overflowing */
-		value = min(U8_MAX, data->led_mc_subled_info[i].brightness);
+		value = min(LED_MAX_BRIGHTNESS, data->led_mc_subled_info[i].brightness);
 		ret = regmap_write(data->regmap, uniwill_led_channel_to_ac_reg[i], value);
 		if (ret < 0)
 			return ret;
@@ -857,6 +976,9 @@ static int uniwill_led_init(struct uniwill_data *data)
 	unsigned int value;
 	int ret;
 
+	if (!(supported_features & UNIWILL_FEATURE_LIGHTBAR))
+		return 0;
+
 	/*
 	 * The EC has separate lightbar settings for AC and battery mode,
 	 * so we have to ensure that both settings are the same.
@@ -865,34 +987,43 @@ static int uniwill_led_init(struct uniwill_data *data)
 	if (ret < 0)
 		return ret;
 
-	/*
-	 * We currently do not support the two animation modes, so we need to
-	 * disable both here.
-	 */
-	value |= LIGHTBAR_APP_EXISTS | LIGHTBAR_S3_OFF;
-	value &= ~LIGHTBAR_WELCOME;
+	value |= LIGHTBAR_APP_EXISTS;
 	ret = regmap_write(data->regmap, EC_ADDR_LIGHTBAR_AC_CTRL, value);
 	if (ret < 0)
 		return ret;
 
+	/*
+	 * The breathing animation during suspend is not supported when
+	 * running on battery power.
+	 */
+	value |= LIGHTBAR_S3_OFF;
 	ret = regmap_update_bits(data->regmap, EC_ADDR_LIGHTBAR_BAT_CTRL, LIGHTBAR_MASK, value);
 	if (ret < 0)
 		return ret;
 
 	data->led_mc_cdev.led_cdev.color = LED_COLOR_ID_MULTI;
-	data->led_mc_cdev.led_cdev.max_brightness = U8_MAX;
+	data->led_mc_cdev.led_cdev.max_brightness = LED_MAX_BRIGHTNESS;
 	data->led_mc_cdev.led_cdev.flags = LED_REJECT_NAME_CONFLICT;
 	data->led_mc_cdev.led_cdev.brightness_set_blocking = uniwill_led_brightness_set;
 
 	if (value & LIGHTBAR_S0_OFF)
 		data->led_mc_cdev.led_cdev.brightness = 0;
 	else
-		data->led_mc_cdev.led_cdev.brightness = U8_MAX;
+		data->led_mc_cdev.led_cdev.brightness = LED_MAX_BRIGHTNESS;
 
 	for (int i = 0; i < LED_CHANNELS; i++) {
 		data->led_mc_subled_info[i].color_index = color_indices[i];
 
 		ret = regmap_read(data->regmap, uniwill_led_channel_to_ac_reg[i], &value);
+		if (ret < 0)
+			return ret;
+
+		/*
+		 * Make sure that the initial intensity value is not greater than
+		 * the maximum brightness.
+		 */
+		value = min(LED_MAX_BRIGHTNESS, value);
+		ret = regmap_write(data->regmap, uniwill_led_channel_to_ac_reg[i], value);
 		if (ret < 0)
 			return ret;
 
@@ -1054,6 +1185,9 @@ static int uniwill_battery_init(struct uniwill_data *data)
 {
 	int ret;
 
+	if (!(supported_features & UNIWILL_FEATURE_BATTERY))
+		return 0;
+
 	ret = devm_mutex_init(&data->wdev->dev, &data->battery_lock);
 	if (ret < 0)
 		return ret;
@@ -1165,30 +1299,43 @@ static void uniwill_shutdown(struct wmi_device *wdev)
 	regmap_clear_bits(data->regmap, EC_ADDR_AP_OEM, ENABLE_MANUAL_CTRL);
 }
 
-static int uniwill_suspend(struct device *dev)
+static int uniwill_suspend_keyboard(struct uniwill_data *data)
 {
-	struct uniwill_data *data = dev_get_drvdata(dev);
-	unsigned int value;
-	int ret;
+	if (!(supported_features & UNIWILL_FEATURE_SUPER_KEY_LOCK))
+		return 0;
 
 	/*
 	 * The EC_ADDR_SWITCH_STATUS is maked as volatile, so we have to restore it
 	 * ourself.
 	 */
-	ret = regmap_read(data->regmap, EC_ADDR_SWITCH_STATUS, &data->last_switch_status);
-	if (ret < 0)
-		return ret;
+	return regmap_read(data->regmap, EC_ADDR_SWITCH_STATUS, &data->last_switch_status);
+}
+
+static int uniwill_suspend_battery(struct uniwill_data *data)
+{
+	if (!(supported_features & UNIWILL_FEATURE_BATTERY))
+		return 0;
 
 	/*
 	 * Save the current charge limit in order to restore it during resume.
 	 * We cannot use the regmap code for that since this register needs to
 	 * be declared as volatile due to CHARGE_CTRL_REACHED.
 	 */
-	ret = regmap_read(data->regmap, EC_ADDR_CHARGE_CTRL, &value);
+	return regmap_read(data->regmap, EC_ADDR_CHARGE_CTRL, &data->last_charge_ctrl);
+}
+
+static int uniwill_suspend(struct device *dev)
+{
+	struct uniwill_data *data = dev_get_drvdata(dev);
+	int ret;
+
+	ret = uniwill_suspend_keyboard(data);
 	if (ret < 0)
 		return ret;
 
-	data->last_charge_limit = FIELD_GET(CHARGE_CTRL_MASK, value);
+	ret = uniwill_suspend_battery(data);
+	if (ret < 0)
+		return ret;
 
 	regcache_cache_only(data->regmap, true);
 	regcache_mark_dirty(data->regmap);
@@ -1196,22 +1343,13 @@ static int uniwill_suspend(struct device *dev)
 	return 0;
 }
 
-static int uniwill_resume(struct device *dev)
+static int uniwill_resume_keyboard(struct uniwill_data *data)
 {
-	struct uniwill_data *data = dev_get_drvdata(dev);
 	unsigned int value;
 	int ret;
 
-	regcache_cache_only(data->regmap, false);
-
-	ret = regcache_sync(data->regmap);
-	if (ret < 0)
-		return ret;
-
-	ret = regmap_update_bits(data->regmap, EC_ADDR_CHARGE_CTRL, CHARGE_CTRL_MASK,
-				 data->last_charge_limit);
-	if (ret < 0)
-		return ret;
+	if (!(supported_features & UNIWILL_FEATURE_SUPER_KEY_LOCK))
+		return 0;
 
 	ret = regmap_read(data->regmap, EC_ADDR_SWITCH_STATUS, &value);
 	if (ret < 0)
@@ -1222,6 +1360,33 @@ static int uniwill_resume(struct device *dev)
 
 	return regmap_write_bits(data->regmap, EC_ADDR_TRIGGER, TRIGGER_SUPER_KEY_LOCK,
 				 TRIGGER_SUPER_KEY_LOCK);
+}
+
+static int uniwill_resume_battery(struct uniwill_data *data)
+{
+	if (!(supported_features & UNIWILL_FEATURE_BATTERY))
+		return 0;
+
+	return regmap_update_bits(data->regmap, EC_ADDR_CHARGE_CTRL, CHARGE_CTRL_MASK,
+				  data->last_charge_ctrl);
+}
+
+static int uniwill_resume(struct device *dev)
+{
+	struct uniwill_data *data = dev_get_drvdata(dev);
+	int ret;
+
+	regcache_cache_only(data->regmap, false);
+
+	ret = regcache_sync(data->regmap);
+	if (ret < 0)
+		return ret;
+
+	ret = uniwill_resume_keyboard(data);
+	if (ret < 0)
+		return ret;
+
+	return uniwill_resume_battery(data);
 }
 
 static DEFINE_SIMPLE_DEV_PM_OPS(uniwill_pm_ops, uniwill_suspend, uniwill_resume);
@@ -1257,6 +1422,11 @@ static const struct dmi_system_id uniwill_dmi_table[] __initconst = {
 			DMI_EXACT_MATCH(DMI_SYS_VENDOR, "Intel(R) Client Systems"),
 			DMI_EXACT_MATCH(DMI_PRODUCT_NAME, "LAPAC71H"),
 		},
+		.driver_data = (void *)(UNIWILL_FEATURE_FN_LOCK |
+					UNIWILL_FEATURE_SUPER_KEY_LOCK |
+					UNIWILL_FEATURE_TOUCHPAD_TOGGLE |
+					UNIWILL_FEATURE_BATTERY |
+					UNIWILL_FEATURE_HWMON),
 	},
 	{
 		.ident = "Intel NUC x15",
@@ -1264,6 +1434,12 @@ static const struct dmi_system_id uniwill_dmi_table[] __initconst = {
 			DMI_EXACT_MATCH(DMI_SYS_VENDOR, "Intel(R) Client Systems"),
 			DMI_EXACT_MATCH(DMI_PRODUCT_NAME, "LAPKC71F"),
 		},
+		.driver_data = (void *)(UNIWILL_FEATURE_FN_LOCK |
+					UNIWILL_FEATURE_SUPER_KEY_LOCK |
+					UNIWILL_FEATURE_TOUCHPAD_TOGGLE |
+					UNIWILL_FEATURE_LIGHTBAR |
+					UNIWILL_FEATURE_BATTERY |
+					UNIWILL_FEATURE_HWMON),
 	},
 	{ }
 };
@@ -1271,11 +1447,18 @@ MODULE_DEVICE_TABLE(dmi, uniwill_dmi_table);
 
 static int __init uniwill_init(void)
 {
-	if (!dmi_first_match(uniwill_dmi_table)) {
+	const struct dmi_system_id *id;
+
+	id = dmi_first_match(uniwill_dmi_table);
+	if (!id) {
 		if (!force)
 			return -ENODEV;
 
+		/* Assume that the device supports all features */
+		supported_features = UINTPTR_MAX;
 		pr_warn("Loading on a potentially unsupported device\n");
+	} else {
+		supported_features = (uintptr_t)id->driver_data;
 	}
 
 	return wmi_driver_register(&uniwill_driver);
