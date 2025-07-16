@@ -2,7 +2,7 @@
 /*
  * Linux hotkey driver for Uniwill notebooks.
  *
- * Copyright (C) 2024 Armin Wolf <W_Armin@gmx.de>
+ * Copyright (C) 2025 Armin Wolf <W_Armin@gmx.de>
  */
 
 #ifndef UNIWILL_WMI_H
@@ -25,7 +25,7 @@
 #define UNIWILL_OSD_WIMAX_OFF			0x0B
 
 #define UNIWILL_OSD_BLUETOOTH_ON		0x0C
-#define UNIWILL_KEY_BLUETOOTH_OFF		0x0D
+#define UNIWILL_OSD_BLUETOOTH_OFF		0x0D
 
 #define UNIWILL_OSD_RF_ON			0x0E
 #define UNIWILL_OSD_RF_OFF			0x0F

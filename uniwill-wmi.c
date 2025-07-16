@@ -2,7 +2,11 @@
 /*
  * Linux hotkey driver for Uniwill notebooks.
  *
- * Copyright (C) 2024 Armin Wolf <W_Armin@gmx.de>
+ * Special thanks go to Pőcze Barnabás, Christoffer Sandberg and Werner Sembach
+ * for supporting the development of this driver either through prior work or
+ * by answering questions regarding the underlying WMI interface.
+ *
+ * Copyright (C) 2025 Armin Wolf <W_Armin@gmx.de>
  */
 
 #include <linux/acpi.h>
@@ -46,6 +50,10 @@ static const struct key_entry uniwill_wmi_keymap[] = {
 
 	/* Reported when user wants to cycle the platform profile */
 	{ KE_IGNORE,	UNIWILL_OSD_PERFORMANCE_MODE_TOGGLE,	{ KEY_UNKNOWN }},
+
+	/* Reported when the user wants to adjust the brightness of the keyboard */
+	{ KE_KEY,	UNIWILL_OSD_KBDILLUMDOWN,		{ KEY_KBDILLUMDOWN }},
+	{ KE_KEY,	UNIWILL_OSD_KBDILLUMUP,			{ KEY_KBDILLUMUP }},
 
 	/* Reported when the user wants to toggle the microphone mute status */
 	{ KE_KEY,	UNIWILL_OSD_MIC_MUTE,			{ KEY_MICMUTE }},

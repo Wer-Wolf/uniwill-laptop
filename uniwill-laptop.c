@@ -2,7 +2,11 @@
 /*
  * Linux driver for Uniwill notebooks.
  *
- * Copyright (C) 2024 Armin Wolf <W_Armin@gmx.de>
+ * Special thanks go to Pőcze Barnabás, Christoffer Sandberg and Werner Sembach
+ * for supporting the development of this driver either through prior work or
+ * by answering questions regarding the underlying WMI interface.
+ *
+ * Copyright (C) 2025 Armin Wolf <W_Armin@gmx.de>
  */
 
 #define pr_format(fmt) KBUILD_MODNAME ": " fmt
@@ -587,11 +591,11 @@ static ssize_t super_key_lock_store(struct device *dev, struct device_attribute 
 {
 	struct uniwill_data *data = dev_get_drvdata(dev);
 	unsigned int value;
-	int ret;
+	int state, ret;
 
-	ret = sysfs_match_string(uniwill_enable_disable_strings, buf);
-	if (ret < 0)
-		return ret;
+	state = sysfs_match_string(uniwill_enable_disable_strings, buf);
+	if (state < 0)
+		return state;
 
 	guard(mutex)(&data->super_key_lock);
 
@@ -603,7 +607,7 @@ static ssize_t super_key_lock_store(struct device *dev, struct device_attribute 
 	 * We can only toggle the super key lock, so we return early if the setting
 	 * is already in the correct state.
 	 */
-	if (ret == !(value & SUPER_KEY_LOCK_STATUS))
+	if (state == !(value & SUPER_KEY_LOCK_STATUS))
 		return count;
 
 	ret = regmap_write_bits(data->regmap, EC_ADDR_TRIGGER, TRIGGER_SUPER_KEY_LOCK,
@@ -819,7 +823,7 @@ static int uniwill_read(struct device *dev, enum hwmon_sensor_types type, u32 at
 		if (ret < 0)
 			return ret;
 
-		*val = value * 1000;
+		*val = value * MILLIDEGREE_PER_DEGREE;
 		return 0;
 	case hwmon_fan:
 		switch (channel) {
@@ -851,6 +855,9 @@ static int uniwill_read(struct device *dev, enum hwmon_sensor_types type, u32 at
 		default:
 			return -EOPNOTSUPP;
 		}
+
+		if (ret < 0)
+			return ret;
 
 		*val = fixp_linear_interpolate(0, 0, PWM_MAX, U8_MAX, value);
 		return 0;
@@ -1305,8 +1312,8 @@ static int uniwill_suspend_keyboard(struct uniwill_data *data)
 		return 0;
 
 	/*
-	 * The EC_ADDR_SWITCH_STATUS is maked as volatile, so we have to restore it
-	 * ourself.
+	 * The EC_ADDR_SWITCH_STATUS is marked as volatile, so we have to restore it
+	 * ourselves.
 	 */
 	return regmap_read(data->regmap, EC_ADDR_SWITCH_STATUS, &data->last_switch_status);
 }
