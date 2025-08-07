@@ -4,18 +4,19 @@
  *
  * Special thanks go to Pőcze Barnabás, Christoffer Sandberg and Werner Sembach
  * for supporting the development of this driver either through prior work or
- * by answering questions regarding the underlying WMI interface.
+ * by answering questions regarding the underlying ACPI and WMI interfaces.
  *
  * Copyright (C) 2025 Armin Wolf <W_Armin@gmx.de>
  */
 
-#define pr_format(fmt) KBUILD_MODNAME ": " fmt
+#define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 
 #include <linux/acpi.h>
 #include <linux/bits.h>
 #include <linux/bitfield.h>
 #include <linux/cleanup.h>
 #include <linux/debugfs.h>
+#include <linux/delay.h>
 #include <linux/device.h>
 #include <linux/device/driver.h>
 #include <linux/dmi.h>
@@ -24,6 +25,8 @@
 #include <linux/hwmon.h>
 #include <linux/hwmon-sysfs.h>
 #include <linux/init.h>
+#include <linux/input.h>
+#include <linux/input/sparse-keymap.h>
 #include <linux/kernel.h>
 #include <linux/kstrtox.h>
 #include <linux/leds.h>
@@ -34,6 +37,7 @@
 #include <linux/module.h>
 #include <linux/mutex.h>
 #include <linux/notifier.h>
+#include <linux/platform_device.h>
 #include <linux/pm.h>
 #include <linux/printk.h>
 #include <linux/regmap.h>
@@ -41,9 +45,7 @@
 #include <linux/string_choices.h>
 #include <linux/sysfs.h>
 #include <linux/types.h>
-#include <linux/unaligned.h>
 #include <linux/units.h>
-#include <linux/wmi.h>
 
 #include <acpi/battery.h>
 
@@ -288,14 +290,20 @@
 /*
  * Those two registers technically allow for manual fan control,
  * but are unstable on some models and are likely not meant to
- * be used by applications.
+ * be used by applications as they are only accessible when using
+ * the WMI interface.
  */
 #define EC_ADDR_PWM_1_WRITEABLE		0x1804
 
 #define EC_ADDR_PWM_2_WRITEABLE		0x1809
 
 #define DRIVER_NAME	"uniwill"
-#define UNIWILL_GUID	"ABBC0F6F-8EA1-11D1-00A0-C90629100000"
+
+/*
+ * The OEM software always sleeps up to 6 ms after reading/writing EC
+ * registers, so we emulate this behaviour for maximum compatibility.
+ */
+#define UNIWILL_EC_DELAY_US	6000
 
 #define PWM_MAX			200
 #define FAN_TABLE_LENGTH	16
@@ -310,23 +318,9 @@
 #define UNIWILL_FEATURE_BATTERY		BIT(4)
 #define UNIWILL_FEATURE_HWMON		BIT(5)
 
-enum uniwill_method {
-	UNIWILL_GET_ULONG	= 0x01,
-	UNIWILL_SET_ULONG	= 0x02,
-	UNIWILL_FIRE_ULONG	= 0x03,
-	UNIWILL_GET_SET_ULONG	= 0x04,
-	UNIWILL_GET_BUTTON	= 0x05,
-};
-
-struct uniwill_method_buffer {
-	__le16 address;
-	__le16 data;
-	__le16 operation;
-	__le16 reserved;
-} __packed;
-
 struct uniwill_data {
-	struct wmi_device *wdev;
+	struct device *dev;
+	acpi_handle handle;
 	struct regmap *regmap;
 	struct acpi_battery_hook hook;
 	unsigned int last_charge_ctrl;
@@ -336,6 +330,8 @@ struct uniwill_data {
 	struct list_head batteries;
 	struct led_classdev_mc led_mc_cdev;
 	struct mc_subled led_mc_subled_info[LED_CHANNELS];
+	struct mutex input_lock;	/* Protects input sequence during notify */
+	struct input_dev *input_device;
 	struct notifier_block nb;
 };
 
@@ -370,84 +366,104 @@ static const char * const uniwill_fan_labels[] = {
 	"Secondary",
 };
 
-static int uniwill_get_set_ulong(struct wmi_device *wdev, struct uniwill_method_buffer *input,
-				 u32 *output)
-{
-	struct acpi_buffer out = { ACPI_ALLOCATE_BUFFER, NULL };
-	struct acpi_buffer in = {
-		.length = sizeof(*input),
-		.pointer = input,
-	};
-	union acpi_object *obj;
-	acpi_status status;
-	int ret = 0;
+static const struct key_entry uniwill_keymap[] = {
+	/* Reported via keyboard controller */
+	{ KE_IGNORE,    UNIWILL_OSD_CAPSLOCK,                   { KEY_CAPSLOCK }},
+	{ KE_IGNORE,    UNIWILL_OSD_NUMLOCK,                    { KEY_NUMLOCK }},
 
-	status = wmidev_evaluate_method(wdev, 0x0, UNIWILL_GET_SET_ULONG, &in, &out);
-	if (ACPI_FAILURE(status))
-		return -EIO;
+	/* Reported when the user locks/unlocks the super key */
+	{ KE_IGNORE,    UNIWILL_OSD_SUPER_KEY_LOCK_ENABLE,      { KEY_UNKNOWN }},
+	{ KE_IGNORE,    UNIWILL_OSD_SUPER_KEY_LOCK_DISABLE,     { KEY_UNKNOWN }},
 
-	obj = out.pointer;
-	if (!obj)
-		return -ENODATA;
+	/* Reported in manual mode when toggling the airplane mode status */
+	{ KE_KEY,       UNIWILL_OSD_RFKILL,                     { KEY_RFKILL }},
 
-	if (obj->type != ACPI_TYPE_BUFFER) {
-		ret = -ENOMSG;
-		goto free_obj;
-	}
+	/* Reported when user wants to cycle the platform profile */
+	{ KE_IGNORE,    UNIWILL_OSD_PERFORMANCE_MODE_TOGGLE,    { KEY_UNKNOWN }},
 
-	if (obj->buffer.length < sizeof(*output)) {
-		ret = -EPROTO;
-		goto free_obj;
-	}
+	/* Reported when the user wants to adjust the brightness of the keyboard */
+	{ KE_KEY,       UNIWILL_OSD_KBDILLUMDOWN,               { KEY_KBDILLUMDOWN }},
+	{ KE_KEY,       UNIWILL_OSD_KBDILLUMUP,                 { KEY_KBDILLUMUP }},
 
-	*output = get_unaligned_le32(obj->buffer.pointer);
+	/* Reported when the user wants to toggle the microphone mute status */
+	{ KE_KEY,       UNIWILL_OSD_MIC_MUTE,                   { KEY_MICMUTE }},
 
-free_obj:
-	kfree(obj);
+	/* Reported when the user locks/unlocks the Fn key */
+	{ KE_IGNORE,    UNIWILL_OSD_FN_LOCK,                    { KEY_FN_ESC }},
 
-	return ret;
-}
+	/* Reported when the user wants to toggle the brightness of the keyboard */
+	{ KE_KEY,       UNIWILL_OSD_KBDILLUMTOGGLE,             { KEY_KBDILLUMTOGGLE }},
+
+	/* FIXME: find out the exact meaning of those events */
+	{ KE_IGNORE,    UNIWILL_OSD_BAT_CHARGE_FULL_24_H,       { KEY_UNKNOWN }},
+	{ KE_IGNORE,    UNIWILL_OSD_BAT_ERM_UPDATE,             { KEY_UNKNOWN }},
+
+	/* Reported when the user wants to toggle the benchmark mode status */
+	{ KE_IGNORE,    UNIWILL_OSD_BENCHMARK_MODE_TOGGLE,      { KEY_UNKNOWN }},
+
+	{ KE_END }
+};
 
 static int uniwill_ec_reg_write(void *context, unsigned int reg, unsigned int val)
 {
-	struct uniwill_method_buffer input = {
-		.address = cpu_to_le16(reg),
-		.data = cpu_to_le16(val & U8_MAX),
-		.operation = 0x0000,
+	union acpi_object params[2] = {
+		{
+			.integer = {
+				.type = ACPI_TYPE_INTEGER,
+				.value = reg,
+			},
+		},
+		{
+			.integer = {
+				.type = ACPI_TYPE_INTEGER,
+				.value = val,
+			},
+		},
 	};
 	struct uniwill_data *data = context;
-	u32 output;
-	int ret;
+	struct acpi_object_list input = {
+		.count = 2,
+		.pointer = params,
+	};
+	acpi_status status;
 
-	ret = uniwill_get_set_ulong(data->wdev, &input, &output);
-	if (ret < 0)
-		return ret;
+	status = acpi_evaluate_object(data->handle, "ECRW", &input, NULL);
+	if (ACPI_FAILURE(status))
+		return -EIO;
 
-	if (output == 0xFEFEFEFE)
-		return -ENXIO;
+	usleep_range(UNIWILL_EC_DELAY_US, UNIWILL_EC_DELAY_US * 2);
 
 	return 0;
 }
 
 static int uniwill_ec_reg_read(void *context, unsigned int reg, unsigned int *val)
 {
-	struct uniwill_method_buffer input = {
-		.address = cpu_to_le16(reg),
-		.data = 0x0000,
-		.operation = cpu_to_le16(0x0100),
+	union acpi_object params[1] = {
+		{
+			.integer = {
+				.type = ACPI_TYPE_INTEGER,
+				.value = reg,
+			},
+		},
 	};
 	struct uniwill_data *data = context;
-	u32 output;
-	int ret;
+	struct acpi_object_list input = {
+		.count = 1,
+		.pointer = params,
+	};
+	unsigned long long output;
+	acpi_status status;
 
-	ret = uniwill_get_set_ulong(data->wdev, &input, &output);
-	if (ret < 0)
-		return ret;
+	status = acpi_evaluate_integer(data->handle, "ECRR", &input, &output);
+	if (ACPI_FAILURE(status))
+		return -EIO;
 
-	if (output == 0xFEFEFEFE)
+	if (output > U8_MAX)
 		return -ENXIO;
 
-	*val = (u8)output;
+	usleep_range(UNIWILL_EC_DELAY_US, UNIWILL_EC_DELAY_US * 2);
+
+	*val = output;
 
 	return 0;
 }
@@ -542,7 +558,7 @@ static const struct regmap_config uniwill_ec_config = {
 	.readable_reg = uniwill_readable_reg,
 	.volatile_reg = uniwill_volatile_reg,
 	.can_sleep = true,
-	.max_register = 0xFFFF,
+	.max_register = 0xFFF,
 	.cache_type = REGCACHE_MAPLE,
 	.use_single_read = true,
 	.use_single_write = true,
@@ -913,7 +929,7 @@ static int uniwill_hwmon_init(struct uniwill_data *data)
 	if (!(supported_features & UNIWILL_FEATURE_HWMON))
 		return 0;
 
-	hdev = devm_hwmon_device_register_with_info(&data->wdev->dev, "uniwill", data,
+	hdev = devm_hwmon_device_register_with_info(data->dev, "uniwill", data,
 						    &uniwill_chip_info, NULL);
 
 	return PTR_ERR_OR_ZERO(hdev);
@@ -1045,7 +1061,7 @@ static int uniwill_led_init(struct uniwill_data *data)
 	data->led_mc_cdev.subled_info = data->led_mc_subled_info;
 	data->led_mc_cdev.num_colors = LED_CHANNELS;
 
-	return devm_led_classdev_multicolor_register_ext(&data->wdev->dev, &data->led_mc_cdev,
+	return devm_led_classdev_multicolor_register_ext(data->dev, &data->led_mc_cdev,
 							 &init_data);
 }
 
@@ -1154,16 +1170,16 @@ static int uniwill_add_battery(struct power_supply *battery, struct acpi_battery
 	if (!entry)
 		return -ENOMEM;
 
-	ret = power_supply_register_extension(battery, &uniwill_extension, &data->wdev->dev, data);
+	ret = power_supply_register_extension(battery, &uniwill_extension, data->dev, data);
 	if (ret < 0) {
 		kfree(entry);
 		return ret;
 	}
 
-	scoped_guard(mutex, &data->battery_lock) {
-		entry->battery = battery;
-		list_add(&entry->head, &data->batteries);
-	}
+	guard(mutex)(&data->battery_lock);
+
+	entry->battery = battery;
+	list_add(&entry->head, &data->batteries);
 
 	return 0;
 }
@@ -1195,7 +1211,7 @@ static int uniwill_battery_init(struct uniwill_data *data)
 	if (!(supported_features & UNIWILL_FEATURE_BATTERY))
 		return 0;
 
-	ret = devm_mutex_init(&data->wdev->dev, &data->battery_lock);
+	ret = devm_mutex_init(data->dev, &data->battery_lock);
 	if (ret < 0)
 		return ret;
 
@@ -1204,7 +1220,7 @@ static int uniwill_battery_init(struct uniwill_data *data)
 	data->hook.add_battery = uniwill_add_battery;
 	data->hook.remove_battery = uniwill_remove_battery;
 
-	return devm_battery_hook_register(&data->wdev->dev, &data->hook);
+	return devm_battery_hook_register(data->dev, &data->hook);
 }
 
 static int uniwill_notifier_call(struct notifier_block *nb, unsigned long action, void *dummy)
@@ -1214,23 +1230,46 @@ static int uniwill_notifier_call(struct notifier_block *nb, unsigned long action
 
 	switch (action) {
 	case UNIWILL_OSD_BATTERY_ALERT:
-		scoped_guard(mutex, &data->battery_lock) {
-			list_for_each_entry(entry, &data->batteries, head) {
-				power_supply_changed(entry->battery);
-			}
+		guard(mutex)(&data->battery_lock);
+		list_for_each_entry(entry, &data->batteries, head) {
+			power_supply_changed(entry->battery);
 		}
 
 		return NOTIFY_OK;
 	default:
-		return NOTIFY_DONE;
+		guard(mutex)(&data->input_lock);
+		sparse_keymap_report_event(data->input_device, action, 1, true);
+
+		return NOTIFY_OK;
 	}
 }
 
-static int uniwill_notifier_init(struct uniwill_data *data)
+static int uniwill_input_init(struct uniwill_data *data)
 {
+	int ret;
+
+	ret = devm_mutex_init(data->dev, &data->input_lock);
+	if (ret < 0)
+		return ret;
+
+	data->input_device = devm_input_allocate_device(data->dev);
+	if (!data->input_device)
+		return -ENOMEM;
+
+	ret = sparse_keymap_setup(data->input_device, uniwill_keymap, NULL);
+	if (ret < 0)
+		return ret;
+
+	data->input_device->name = "Uniwill WMI hotkeys";
+	data->input_device->phys = "wmi/input0";
+	data->input_device->id.bustype = BUS_HOST;
+	ret = input_register_device(data->input_device);
+	if (ret < 0)
+		return ret;
+
 	data->nb.notifier_call = uniwill_notifier_call;
 
-	return devm_uniwill_wmi_register_notifier(&data->wdev->dev, &data->nb);
+	return devm_uniwill_wmi_register_notifier(data->dev, &data->nb);
 }
 
 static void uniwill_disable_manual_control(void *context)
@@ -1249,34 +1288,40 @@ static int uniwill_ec_init(struct uniwill_data *data)
 	if (ret < 0)
 		return ret;
 
-	dev_dbg(&data->wdev->dev, "Project ID: %u\n", value);
+	dev_dbg(data->dev, "Project ID: %u\n", value);
 
 	ret = regmap_set_bits(data->regmap, EC_ADDR_AP_OEM, ENABLE_MANUAL_CTRL);
 	if (ret < 0)
 		return ret;
 
-	return devm_add_action_or_reset(&data->wdev->dev, uniwill_disable_manual_control, data);
+	return devm_add_action_or_reset(data->dev, uniwill_disable_manual_control, data);
 }
 
-static int uniwill_probe(struct wmi_device *wdev, const void *context)
+static int uniwill_probe(struct platform_device *pdev)
 {
 	struct uniwill_data *data;
 	struct regmap *regmap;
+	acpi_handle handle;
 	int ret;
 
-	data = devm_kzalloc(&wdev->dev, sizeof(*data), GFP_KERNEL);
+	handle = ACPI_HANDLE(&pdev->dev);
+	if (!handle)
+		return -ENODEV;
+
+	data = devm_kzalloc(&pdev->dev, sizeof(*data), GFP_KERNEL);
 	if (!data)
 		return -ENOMEM;
 
-	data->wdev = wdev;
-	dev_set_drvdata(&wdev->dev, data);
+	data->dev = &pdev->dev;
+	data->handle = handle;
+	platform_set_drvdata(pdev, data);
 
-	regmap = devm_regmap_init(&wdev->dev, &uniwill_ec_bus, data, &uniwill_ec_config);
+	regmap = devm_regmap_init(&pdev->dev, &uniwill_ec_bus, data, &uniwill_ec_config);
 	if (IS_ERR(regmap))
 		return PTR_ERR(regmap);
 
 	data->regmap = regmap;
-	ret = devm_mutex_init(&wdev->dev, &data->super_key_lock);
+	ret = devm_mutex_init(&pdev->dev, &data->super_key_lock);
 	if (ret < 0)
 		return ret;
 
@@ -1296,12 +1341,12 @@ static int uniwill_probe(struct wmi_device *wdev, const void *context)
 	if (ret < 0)
 		return ret;
 
-	return uniwill_notifier_init(data);
+	return uniwill_input_init(data);
 }
 
-static void uniwill_shutdown(struct wmi_device *wdev)
+static void uniwill_shutdown(struct platform_device *pdev)
 {
-	struct uniwill_data *data = dev_get_drvdata(&wdev->dev);
+	struct uniwill_data *data = platform_get_drvdata(pdev);
 
 	regmap_clear_bits(data->regmap, EC_ADDR_AP_OEM, ENABLE_MANUAL_CTRL);
 }
@@ -1399,27 +1444,24 @@ static int uniwill_resume(struct device *dev)
 static DEFINE_SIMPLE_DEV_PM_OPS(uniwill_pm_ops, uniwill_suspend, uniwill_resume);
 
 /*
- * We cannot fully trust this GUID since Uniwill just copied the WMI GUID
- * from the Windows driver example, and others probably did the same.
- *
- * Because of this we cannot use this WMI GUID for autoloading.
+ * We only use the DMI table for auoloading because the ACPI device itself
+ * does not guarantee that the underlying EC implementation is supported.
  */
-static const struct wmi_device_id uniwill_id_table[] = {
-	{ UNIWILL_GUID, NULL },
-	{ }
+static const struct acpi_device_id uniwill_id_table[] = {
+	{ "INOU0000" },
+	{ },
 };
 
-static struct wmi_driver uniwill_driver = {
+static struct platform_driver uniwill_driver = {
 	.driver = {
 		.name = DRIVER_NAME,
 		.dev_groups = uniwill_groups,
 		.probe_type = PROBE_PREFER_ASYNCHRONOUS,
+		.acpi_match_table = uniwill_id_table,
 		.pm = pm_sleep_ptr(&uniwill_pm_ops),
 	},
-	.id_table = uniwill_id_table,
 	.probe = uniwill_probe,
 	.shutdown = uniwill_shutdown,
-	.no_singleton = true,
 };
 
 static const struct dmi_system_id uniwill_dmi_table[] __initconst = {
@@ -1455,6 +1497,7 @@ MODULE_DEVICE_TABLE(dmi, uniwill_dmi_table);
 static int __init uniwill_init(void)
 {
 	const struct dmi_system_id *id;
+	int ret;
 
 	id = dmi_first_match(uniwill_dmi_table);
 	if (!id) {
@@ -1468,13 +1511,18 @@ static int __init uniwill_init(void)
 		supported_features = (uintptr_t)id->driver_data;
 	}
 
-	return wmi_driver_register(&uniwill_driver);
+	ret = platform_driver_register(&uniwill_driver);
+	if (ret < 0)
+		return ret;
+
+	return uniwill_wmi_register_driver();
 }
 module_init(uniwill_init);
 
 static void __exit uniwill_exit(void)
 {
-	wmi_driver_unregister(&uniwill_driver);
+	uniwill_wmi_unregister_driver();
+	platform_driver_unregister(&uniwill_driver);
 }
 module_exit(uniwill_exit);
 

@@ -8,6 +8,8 @@
 #ifndef UNIWILL_WMI_H
 #define UNIWILL_WMI_H
 
+#include <linux/init.h>
+
 #define UNIWILL_OSD_CAPSLOCK			0x01
 #define UNIWILL_OSD_NUMLOCK			0x02
 #define UNIWILL_OSD_SCROLLLOCK			0x03
@@ -113,10 +115,13 @@
 
 #define UNIWILL_OSD_KBD_BACKLIGHT_CHANGED	0xF0
 
+struct device;
 struct notifier_block;
 
-int uniwill_wmi_register_notifier(struct notifier_block *nb);
-int uniwill_wmi_unregister_notifier(struct notifier_block *nb);
 int devm_uniwill_wmi_register_notifier(struct device *dev, struct notifier_block *nb);
+
+int __init uniwill_wmi_register_driver(void);
+
+void __exit uniwill_wmi_unregister_driver(void);
 
 #endif /* UNIWILL_WMI_H */
