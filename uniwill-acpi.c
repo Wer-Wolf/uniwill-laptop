@@ -1229,18 +1229,20 @@ static int uniwill_notifier_call(struct notifier_block *nb, unsigned long action
 	struct uniwill_battery_entry *entry;
 
 	switch (action) {
-	case UNIWILL_OSD_BATTERY_ALERT:
+	case UNIWILL_OSD_BATTERY_ALERT: {
 		guard(mutex)(&data->battery_lock);
 		list_for_each_entry(entry, &data->batteries, head) {
 			power_supply_changed(entry->battery);
 		}
 
 		return NOTIFY_OK;
-	default:
+	}
+	default: {
 		guard(mutex)(&data->input_lock);
 		sparse_keymap_report_event(data->input_device, action, 1, true);
 
 		return NOTIFY_OK;
+	}
 	}
 }
 
