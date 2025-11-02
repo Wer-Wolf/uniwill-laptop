@@ -12,6 +12,7 @@
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 
 #include <linux/acpi.h>
+#include <linux/array_size.h>
 #include <linux/bits.h>
 #include <linux/bitfield.h>
 #include <linux/cleanup.h>
@@ -42,7 +43,6 @@
 #include <linux/printk.h>
 #include <linux/regmap.h>
 #include <linux/string.h>
-#include <linux/string_choices.h>
 #include <linux/sysfs.h>
 #include <linux/types.h>
 #include <linux/units.h>
@@ -311,12 +311,12 @@
 #define LED_CHANNELS		3
 #define LED_MAX_BRIGHTNESS	200
 
-#define UNIWILL_FEATURE_FN_LOCK		BIT(0)
-#define UNIWILL_FEATURE_SUPER_KEY_LOCK	BIT(1)
-#define UNIWILL_FEATURE_TOUCHPAD_TOGGLE BIT(2)
-#define UNIWILL_FEATURE_LIGHTBAR	BIT(3)
-#define UNIWILL_FEATURE_BATTERY		BIT(4)
-#define UNIWILL_FEATURE_HWMON		BIT(5)
+#define UNIWILL_FEATURE_FN_LOCK_TOGGLE		BIT(0)
+#define UNIWILL_FEATURE_SUPER_KEY_TOGGLE	BIT(1)
+#define UNIWILL_FEATURE_TOUCHPAD_TOGGLE		BIT(2)
+#define UNIWILL_FEATURE_LIGHTBAR		BIT(3)
+#define UNIWILL_FEATURE_BATTERY			BIT(4)
+#define UNIWILL_FEATURE_HWMON			BIT(5)
 
 struct uniwill_data {
 	struct device *dev;
@@ -328,6 +328,7 @@ struct uniwill_data {
 	unsigned int last_switch_status;
 	struct mutex super_key_lock;	/* Protects the toggling of the super key lock state */
 	struct list_head batteries;
+	struct mutex led_lock;		/* Protects writes to the lightbar registers */
 	struct led_classdev_mc led_mc_cdev;
 	struct mc_subled led_mc_subled_info[LED_CHANNELS];
 	struct mutex input_lock;	/* Protects input sequence during notify */
@@ -345,16 +346,7 @@ module_param_unsafe(force, bool, 0);
 MODULE_PARM_DESC(force, "Force loading without checking for supported devices\n");
 
 /* Feature bitmask since the associated registers are not reliable */
-static uintptr_t supported_features;
-
-/*
- * "disable" is placed on index 0 so that the return value of sysfs_match_string()
- * directly translates into a boolean value.
- */
-static const char * const uniwill_enable_disable_strings[] = {
-	[0] = "disable",
-	[1] = "enable",
-};
+static unsigned int supported_features;
 
 static const char * const uniwill_temp_labels[] = {
 	"CPU",
@@ -374,6 +366,8 @@ static const struct key_entry uniwill_keymap[] = {
 	/* Reported when the user locks/unlocks the super key */
 	{ KE_IGNORE,    UNIWILL_OSD_SUPER_KEY_LOCK_ENABLE,      { KEY_UNKNOWN }},
 	{ KE_IGNORE,    UNIWILL_OSD_SUPER_KEY_LOCK_DISABLE,     { KEY_UNKNOWN }},
+	/* Optional, might not be reported by all devices */
+	{ KE_IGNORE,	UNIWILL_OSD_SUPER_KEY_LOCK_CHANGED,	{ KEY_UNKNOWN }},
 
 	/* Reported in manual mode when toggling the airplane mode status */
 	{ KE_KEY,       UNIWILL_OSD_RFKILL,                     { KEY_RFKILL }},
@@ -422,7 +416,7 @@ static int uniwill_ec_reg_write(void *context, unsigned int reg, unsigned int va
 	};
 	struct uniwill_data *data = context;
 	struct acpi_object_list input = {
-		.count = 2,
+		.count = ARRAY_SIZE(params),
 		.pointer = params,
 	};
 	acpi_status status;
@@ -448,7 +442,7 @@ static int uniwill_ec_reg_read(void *context, unsigned int reg, unsigned int *va
 	};
 	struct uniwill_data *data = context;
 	struct acpi_object_list input = {
-		.count = 1,
+		.count = ARRAY_SIZE(params),
 		.pointer = params,
 	};
 	unsigned long long output;
@@ -564,18 +558,19 @@ static const struct regmap_config uniwill_ec_config = {
 	.use_single_write = true,
 };
 
-static ssize_t fn_lock_store(struct device *dev, struct device_attribute *attr, const char *buf,
-			     size_t count)
+static ssize_t fn_lock_toggle_enable_store(struct device *dev, struct device_attribute *attr,
+					   const char *buf, size_t count)
 {
 	struct uniwill_data *data = dev_get_drvdata(dev);
 	unsigned int value;
+	bool enable;
 	int ret;
 
-	ret = sysfs_match_string(uniwill_enable_disable_strings, buf);
+	ret = kstrtobool(buf, &enable);
 	if (ret < 0)
 		return ret;
 
-	if (ret)
+	if (enable)
 		value = FN_LOCK_STATUS;
 	else
 		value = 0;
@@ -587,7 +582,8 @@ static ssize_t fn_lock_store(struct device *dev, struct device_attribute *attr, 
 	return count;
 }
 
-static ssize_t fn_lock_show(struct device *dev, struct device_attribute *attr, char *buf)
+static ssize_t fn_lock_toggle_enable_show(struct device *dev, struct device_attribute *attr,
+					  char *buf)
 {
 	struct uniwill_data *data = dev_get_drvdata(dev);
 	unsigned int value;
@@ -597,21 +593,22 @@ static ssize_t fn_lock_show(struct device *dev, struct device_attribute *attr, c
 	if (ret < 0)
 		return ret;
 
-	return sysfs_emit(buf, "%s\n", str_enable_disable(value & FN_LOCK_STATUS));
+	return sysfs_emit(buf, "%d\n", !!(value & FN_LOCK_STATUS));
 }
 
-static DEVICE_ATTR_RW(fn_lock);
+static DEVICE_ATTR_RW(fn_lock_toggle_enable);
 
-static ssize_t super_key_lock_store(struct device *dev, struct device_attribute *attr,
-				    const char *buf, size_t count)
+static ssize_t super_key_toggle_enable_store(struct device *dev, struct device_attribute *attr,
+					     const char *buf, size_t count)
 {
 	struct uniwill_data *data = dev_get_drvdata(dev);
 	unsigned int value;
-	int state, ret;
+	bool enable;
+	int ret;
 
-	state = sysfs_match_string(uniwill_enable_disable_strings, buf);
-	if (state < 0)
-		return state;
+	ret = kstrtobool(buf, &enable);
+	if (ret < 0)
+		return ret;
 
 	guard(mutex)(&data->super_key_lock);
 
@@ -623,7 +620,7 @@ static ssize_t super_key_lock_store(struct device *dev, struct device_attribute 
 	 * We can only toggle the super key lock, so we return early if the setting
 	 * is already in the correct state.
 	 */
-	if (state == !(value & SUPER_KEY_LOCK_STATUS))
+	if (enable == !(value & SUPER_KEY_LOCK_STATUS))
 		return count;
 
 	ret = regmap_write_bits(data->regmap, EC_ADDR_TRIGGER, TRIGGER_SUPER_KEY_LOCK,
@@ -634,7 +631,8 @@ static ssize_t super_key_lock_store(struct device *dev, struct device_attribute 
 	return count;
 }
 
-static ssize_t super_key_lock_show(struct device *dev, struct device_attribute *attr, char *buf)
+static ssize_t super_key_toggle_enable_show(struct device *dev, struct device_attribute *attr,
+					    char *buf)
 {
 	struct uniwill_data *data = dev_get_drvdata(dev);
 	unsigned int value;
@@ -644,23 +642,24 @@ static ssize_t super_key_lock_show(struct device *dev, struct device_attribute *
 	if (ret < 0)
 		return ret;
 
-	return sysfs_emit(buf, "%s\n", str_enable_disable(!(value & SUPER_KEY_LOCK_STATUS)));
+	return sysfs_emit(buf, "%d\n", !(value & SUPER_KEY_LOCK_STATUS));
 }
 
-static DEVICE_ATTR_RW(super_key_lock);
+static DEVICE_ATTR_RW(super_key_toggle_enable);
 
-static ssize_t touchpad_toggle_store(struct device *dev, struct device_attribute *attr,
-				     const char *buf, size_t count)
+static ssize_t touchpad_toggle_enable_store(struct device *dev, struct device_attribute *attr,
+					    const char *buf, size_t count)
 {
 	struct uniwill_data *data = dev_get_drvdata(dev);
 	unsigned int value;
+	bool enable;
 	int ret;
 
-	ret = sysfs_match_string(uniwill_enable_disable_strings, buf);
+	ret = kstrtobool(buf, &enable);
 	if (ret < 0)
 		return ret;
 
-	if (ret)
+	if (enable)
 		value = 0;
 	else
 		value = TOUCHPAD_TOGGLE_OFF;
@@ -672,7 +671,8 @@ static ssize_t touchpad_toggle_store(struct device *dev, struct device_attribute
 	return count;
 }
 
-static ssize_t touchpad_toggle_show(struct device *dev, struct device_attribute *attr, char *buf)
+static ssize_t touchpad_toggle_enable_show(struct device *dev, struct device_attribute *attr,
+					   char *buf)
 {
 	struct uniwill_data *data = dev_get_drvdata(dev);
 	unsigned int value;
@@ -682,26 +682,29 @@ static ssize_t touchpad_toggle_show(struct device *dev, struct device_attribute 
 	if (ret < 0)
 		return ret;
 
-	return sysfs_emit(buf, "%s\n", str_enable_disable(!(value & TOUCHPAD_TOGGLE_OFF)));
+	return sysfs_emit(buf, "%d\n", !(value & TOUCHPAD_TOGGLE_OFF));
 }
 
-static DEVICE_ATTR_RW(touchpad_toggle);
+static DEVICE_ATTR_RW(touchpad_toggle_enable);
 
 static ssize_t rainbow_animation_store(struct device *dev, struct device_attribute *attr,
 				       const char *buf, size_t count)
 {
 	struct uniwill_data *data = dev_get_drvdata(dev);
 	unsigned int value;
+	bool enable;
 	int ret;
 
-	ret = sysfs_match_string(uniwill_enable_disable_strings, buf);
+	ret = kstrtobool(buf, &enable);
 	if (ret < 0)
 		return ret;
 
-	if (ret)
+	if (enable)
 		value = LIGHTBAR_WELCOME;
 	else
 		value = 0;
+
+	guard(mutex)(&data->led_lock);
 
 	ret = regmap_update_bits(data->regmap, EC_ADDR_LIGHTBAR_AC_CTRL, LIGHTBAR_WELCOME, value);
 	if (ret < 0)
@@ -724,7 +727,7 @@ static ssize_t rainbow_animation_show(struct device *dev, struct device_attribut
 	if (ret < 0)
 		return ret;
 
-	return sysfs_emit(buf, "%s\n", str_enable_disable(value & LIGHTBAR_WELCOME));
+	return sysfs_emit(buf, "%d\n", !!(value & LIGHTBAR_WELCOME));
 }
 
 static DEVICE_ATTR_RW(rainbow_animation);
@@ -734,17 +737,19 @@ static ssize_t breathing_in_suspend_store(struct device *dev, struct device_attr
 {
 	struct uniwill_data *data = dev_get_drvdata(dev);
 	unsigned int value;
+	bool enable;
 	int ret;
 
-	ret = sysfs_match_string(uniwill_enable_disable_strings, buf);
+	ret = kstrtobool(buf, &enable);
 	if (ret < 0)
 		return ret;
 
-	if (ret)
+	if (enable)
 		value = 0;
 	else
 		value = LIGHTBAR_S3_OFF;
 
+	/* We only access a single register here, so we do not need to use data->led_lock */
 	ret = regmap_update_bits(data->regmap, EC_ADDR_LIGHTBAR_AC_CTRL, LIGHTBAR_S3_OFF, value);
 	if (ret < 0)
 		return ret;
@@ -763,16 +768,16 @@ static ssize_t breathing_in_suspend_show(struct device *dev, struct device_attri
 	if (ret < 0)
 		return ret;
 
-	return sysfs_emit(buf, "%s\n", str_enable_disable(!(value & LIGHTBAR_S3_OFF)));
+	return sysfs_emit(buf, "%d\n", !(value & LIGHTBAR_S3_OFF));
 }
 
 static DEVICE_ATTR_RW(breathing_in_suspend);
 
 static struct attribute *uniwill_attrs[] = {
 	/* Keyboard-related */
-	&dev_attr_fn_lock.attr,
-	&dev_attr_super_key_lock.attr,
-	&dev_attr_touchpad_toggle.attr,
+	&dev_attr_fn_lock_toggle_enable.attr,
+	&dev_attr_super_key_toggle_enable.attr,
+	&dev_attr_touchpad_toggle_enable.attr,
 	/* Lightbar-related */
 	&dev_attr_rainbow_animation.attr,
 	&dev_attr_breathing_in_suspend.attr,
@@ -781,17 +786,17 @@ static struct attribute *uniwill_attrs[] = {
 
 static umode_t uniwill_attr_is_visible(struct kobject *kobj, struct attribute *attr, int n)
 {
-	if (attr == &dev_attr_fn_lock.attr) {
-		if (supported_features & UNIWILL_FEATURE_FN_LOCK)
+	if (attr == &dev_attr_fn_lock_toggle_enable.attr) {
+		if (supported_features & UNIWILL_FEATURE_FN_LOCK_TOGGLE)
 			return attr->mode;
 	}
 
-	if (attr == &dev_attr_super_key_lock.attr) {
-		if (supported_features & UNIWILL_FEATURE_SUPER_KEY_LOCK)
+	if (attr == &dev_attr_super_key_toggle_enable.attr) {
+		if (supported_features & UNIWILL_FEATURE_SUPER_KEY_TOGGLE)
 			return attr->mode;
 	}
 
-	if (attr == &dev_attr_touchpad_toggle.attr) {
+	if (attr == &dev_attr_touchpad_toggle_enable.attr) {
 		if (supported_features & UNIWILL_FEATURE_TOUCHPAD_TOGGLE)
 			return attr->mode;
 	}
@@ -958,6 +963,8 @@ static int uniwill_led_brightness_set(struct led_classdev *led_cdev, enum led_br
 	if (ret < 0)
 		return ret;
 
+	guard(mutex)(&data->led_lock);
+
 	for (int i = 0; i < LED_CHANNELS; i++) {
 		/* Prevent the brightness values from overflowing */
 		value = min(LED_MAX_BRIGHTNESS, data->led_mc_subled_info[i].brightness);
@@ -1001,6 +1008,10 @@ static int uniwill_led_init(struct uniwill_data *data)
 
 	if (!(supported_features & UNIWILL_FEATURE_LIGHTBAR))
 		return 0;
+
+	ret = devm_mutex_init(data->dev, &data->led_lock);
+	if (ret < 0)
+		return ret;
 
 	/*
 	 * The EC has separate lightbar settings for AC and battery mode,
@@ -1076,7 +1087,7 @@ static int uniwill_get_property(struct power_supply *psy, const struct power_sup
 
 	switch (psp) {
 	case POWER_SUPPLY_PROP_HEALTH:
-		ret = power_supply_get_property(psy, POWER_SUPPLY_PROP_PRESENT, &prop);
+		ret = power_supply_get_property_direct(psy, POWER_SUPPLY_PROP_PRESENT, &prop);
 		if (ret < 0)
 			return ret;
 
@@ -1085,7 +1096,7 @@ static int uniwill_get_property(struct power_supply *psy, const struct power_sup
 			return 0;
 		}
 
-		ret = power_supply_get_property(psy, POWER_SUPPLY_PROP_STATUS, &prop);
+		ret = power_supply_get_property_direct(psy, POWER_SUPPLY_PROP_STATUS, &prop);
 		if (ret < 0)
 			return ret;
 
@@ -1230,15 +1241,17 @@ static int uniwill_notifier_call(struct notifier_block *nb, unsigned long action
 
 	switch (action) {
 	case UNIWILL_OSD_BATTERY_ALERT:
-		guard(mutex)(&data->battery_lock);
+		mutex_lock(&data->battery_lock);
 		list_for_each_entry(entry, &data->batteries, head) {
 			power_supply_changed(entry->battery);
 		}
+		mutex_unlock(&data->battery_lock);
 
 		return NOTIFY_OK;
 	default:
-		guard(mutex)(&data->input_lock);
+		mutex_lock(&data->input_lock);
 		sparse_keymap_report_event(data->input_device, action, 1, true);
+		mutex_unlock(&data->input_lock);
 
 		return NOTIFY_OK;
 	}
@@ -1353,7 +1366,7 @@ static void uniwill_shutdown(struct platform_device *pdev)
 
 static int uniwill_suspend_keyboard(struct uniwill_data *data)
 {
-	if (!(supported_features & UNIWILL_FEATURE_SUPER_KEY_LOCK))
+	if (!(supported_features & UNIWILL_FEATURE_SUPER_KEY_TOGGLE))
 		return 0;
 
 	/*
@@ -1400,7 +1413,7 @@ static int uniwill_resume_keyboard(struct uniwill_data *data)
 	unsigned int value;
 	int ret;
 
-	if (!(supported_features & UNIWILL_FEATURE_SUPER_KEY_LOCK))
+	if (!(supported_features & UNIWILL_FEATURE_SUPER_KEY_TOGGLE))
 		return 0;
 
 	ret = regmap_read(data->regmap, EC_ADDR_SWITCH_STATUS, &value);
@@ -1471,8 +1484,8 @@ static const struct dmi_system_id uniwill_dmi_table[] __initconst = {
 			DMI_EXACT_MATCH(DMI_SYS_VENDOR, "Intel(R) Client Systems"),
 			DMI_EXACT_MATCH(DMI_PRODUCT_NAME, "LAPAC71H"),
 		},
-		.driver_data = (void *)(UNIWILL_FEATURE_FN_LOCK |
-					UNIWILL_FEATURE_SUPER_KEY_LOCK |
+		.driver_data = (void *)(UNIWILL_FEATURE_FN_LOCK_TOGGLE |
+					UNIWILL_FEATURE_SUPER_KEY_TOGGLE |
 					UNIWILL_FEATURE_TOUCHPAD_TOGGLE |
 					UNIWILL_FEATURE_BATTERY |
 					UNIWILL_FEATURE_HWMON),
@@ -1483,8 +1496,8 @@ static const struct dmi_system_id uniwill_dmi_table[] __initconst = {
 			DMI_EXACT_MATCH(DMI_SYS_VENDOR, "Intel(R) Client Systems"),
 			DMI_EXACT_MATCH(DMI_PRODUCT_NAME, "LAPKC71F"),
 		},
-		.driver_data = (void *)(UNIWILL_FEATURE_FN_LOCK |
-					UNIWILL_FEATURE_SUPER_KEY_LOCK |
+		.driver_data = (void *)(UNIWILL_FEATURE_FN_LOCK_TOGGLE |
+					UNIWILL_FEATURE_SUPER_KEY_TOGGLE |
 					UNIWILL_FEATURE_TOUCHPAD_TOGGLE |
 					UNIWILL_FEATURE_LIGHTBAR |
 					UNIWILL_FEATURE_BATTERY |
@@ -1505,7 +1518,7 @@ static int __init uniwill_init(void)
 			return -ENODEV;
 
 		/* Assume that the device supports all features */
-		supported_features = UINTPTR_MAX;
+		supported_features = UINT_MAX;
 		pr_warn("Loading on a potentially unsupported device\n");
 	} else {
 		supported_features = (uintptr_t)id->driver_data;
@@ -1515,7 +1528,13 @@ static int __init uniwill_init(void)
 	if (ret < 0)
 		return ret;
 
-	return uniwill_wmi_register_driver();
+	ret = uniwill_wmi_register_driver();
+	if (ret < 0) {
+		platform_driver_unregister(&uniwill_driver);
+		return ret;
+	}
+
+	return 0;
 }
 module_init(uniwill_init);
 
@@ -1529,4 +1548,3 @@ module_exit(uniwill_exit);
 MODULE_AUTHOR("Armin Wolf <W_Armin@gmx.de>");
 MODULE_DESCRIPTION("Uniwill notebook driver");
 MODULE_LICENSE("GPL");
-MODULE_IMPORT_NS("UNIWILL");

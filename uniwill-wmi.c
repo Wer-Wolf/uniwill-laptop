@@ -15,7 +15,6 @@
 #include <linux/device.h>
 #include <linux/init.h>
 #include <linux/mod_devicetable.h>
-#include <linux/module.h>
 #include <linux/notifier.h>
 #include <linux/printk.h>
 #include <linux/types.h>
@@ -91,7 +90,3 @@ void __exit uniwill_wmi_unregister_driver(void)
 {
 	wmi_driver_unregister(&uniwill_wmi_driver);
 }
-
-MODULE_AUTHOR("Armin Wolf <W_Armin@gmx.de>");
-MODULE_DESCRIPTION("Uniwill notebook hotkey driver");
-MODULE_LICENSE("GPL");
