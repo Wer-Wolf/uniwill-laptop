@@ -3,7 +3,7 @@ Linux kernel driver for various Uniwill laptops. The driver itself should be shi
 starting with kernel version 6.19. This repository mainly contains experimental features for testers to test.
 
 ## Installation
-You can build the kernel modules by simply executing `make`. Keep in mind that you need a recent enough linux kernel (>= 6.10.0)
+You can build the kernel modules by simply executing `make`. Keep in mind that you need a recent enough linux kernel (>= 6.17.0)
 and the linux kernel headers installed.
 
 You can then load the kernel modules by executing `insmod uniwill-laptop.ko` with superuser privileges.

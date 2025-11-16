@@ -39,6 +39,7 @@
 #include <linux/mutex.h>
 #include <linux/notifier.h>
 #include <linux/platform_device.h>
+#include <linux/platform_profile.h>
 #include <linux/pm.h>
 #include <linux/printk.h>
 #include <linux/regmap.h>
@@ -251,6 +252,11 @@
 #define OVERBOOST_DYN_TEMP_OFF		BIT(1)
 #define TOUCHPAD_TOGGLE_OFF		BIT(6)
 
+#define EC_ADDR_POWER_MODE_LED		0x07AB
+#define POWER_MODE_LED_PERFORMANCE	0x01
+#define POWER_MODE_LED_BALANCED		0x02
+#define POWER_MODE_LED_BATTERY_SAVER	0x03
+
 #define EC_ADDR_CHARGE_CTRL		0x07B9
 #define CHARGE_CTRL_MASK		GENMASK(6, 0)
 #define CHARGE_CTRL_REACHED		BIT(7)
@@ -307,6 +313,9 @@
 
 #define PWM_MAX			200
 #define FAN_TABLE_LENGTH	16
+#define FAN_TABLE_MAGIC_1	0xFD
+#define FAN_TABLE_MAGIC_2	0xC9
+#define FAN_TABLE_MAX_RETRIES	10
 
 #define LED_CHANNELS		3
 #define LED_MAX_BRIGHTNESS	200
@@ -317,6 +326,29 @@
 #define UNIWILL_FEATURE_LIGHTBAR		BIT(3)
 #define UNIWILL_FEATURE_BATTERY			BIT(4)
 #define UNIWILL_FEATURE_HWMON			BIT(5)
+#define UNIWILL_FEATURE_FAN_TABLE		BIT(6)
+#define UNIWILL_FEATURE_POWER_MODE_LED		BIT(7)
+
+enum uniwill_fan_mode {
+	FAN_MODE_PERFORMANCE	= 1,
+	FAN_MODE_STANDARD	= 2,
+	FAN_MODE_QUIET		= 3,
+	/* Special mode for NVidia GPUs, currently not supported */
+	FAN_MODE_WHISPER	= 4,
+};
+
+struct uniwill_fan_table {
+	u8 upper_temp[FAN_TABLE_LENGTH];
+	u8 lower_temp[FAN_TABLE_LENGTH];
+	u8 fan_speed[FAN_TABLE_LENGTH];
+} __packed;
+
+struct uniwill_fan_tables {
+	struct uniwill_fan_table cpu;
+	struct uniwill_fan_table gpu;
+} __packed;
+
+static_assert(sizeof(struct uniwill_fan_tables) == FAN_TABLE_LENGTH * 6);
 
 struct uniwill_data {
 	struct device *dev;
@@ -334,6 +366,12 @@ struct uniwill_data {
 	struct mutex input_lock;	/* Protects input sequence during notify */
 	struct input_dev *input_device;
 	struct notifier_block nb;
+	struct mutex profile_lock;	/* Protects accesses to the platform profile */
+	struct device *profile_device;
+	enum platform_profile_option current_profile;
+	struct uniwill_fan_tables performance_tables;
+	struct uniwill_fan_tables standard_tables;
+	struct uniwill_fan_tables quiet_tables;
 };
 
 struct uniwill_battery_entry {
@@ -393,7 +431,7 @@ static const struct key_entry uniwill_keymap[] = {
 	{ KE_IGNORE,    UNIWILL_OSD_BAT_ERM_UPDATE,             { KEY_UNKNOWN }},
 
 	/* Reported when the user wants to toggle the benchmark mode status */
-	{ KE_IGNORE,    UNIWILL_OSD_BENCHMARK_MODE_TOGGLE,      { KEY_UNKNOWN }},
+	{ KE_KEY,	UNIWILL_OSD_BENCHMARK_MODE_TOGGLE,	{ KEY_PERFORMANCE }},
 
 	{ KE_END }
 };
@@ -471,6 +509,10 @@ static const struct regmap_bus uniwill_ec_bus = {
 
 static bool uniwill_writeable_reg(struct device *dev, unsigned int reg)
 {
+	if (reg >= EC_ADDR_CPU_TEMP_END_TABLE &&
+	    reg < EC_ADDR_GPU_FAN_SPEED_TABLE + FAN_TABLE_LENGTH)
+		return true;
+
 	switch (reg) {
 	case EC_ADDR_AP_OEM:
 	case EC_ADDR_LIGHTBAR_AC_CTRL:
@@ -480,7 +522,9 @@ static bool uniwill_writeable_reg(struct device *dev, unsigned int reg)
 	case EC_ADDR_BIOS_OEM:
 	case EC_ADDR_TRIGGER:
 	case EC_ADDR_OEM_4:
+	case EC_ADDR_POWER_MODE_LED:
 	case EC_ADDR_CHARGE_CTRL:
+	case EC_ADDR_AP_OEM_6:
 	case EC_ADDR_LIGHTBAR_BAT_CTRL:
 	case EC_ADDR_LIGHTBAR_BAT_RED:
 	case EC_ADDR_LIGHTBAR_BAT_GREEN:
@@ -493,6 +537,10 @@ static bool uniwill_writeable_reg(struct device *dev, unsigned int reg)
 
 static bool uniwill_readable_reg(struct device *dev, unsigned int reg)
 {
+	if (reg >= EC_ADDR_CPU_TEMP_END_TABLE &&
+	    reg < EC_ADDR_GPU_FAN_SPEED_TABLE + FAN_TABLE_LENGTH)
+		return true;
+
 	switch (reg) {
 	case EC_ADDR_CPU_TEMP:
 	case EC_ADDR_GPU_TEMP:
@@ -513,7 +561,9 @@ static bool uniwill_readable_reg(struct device *dev, unsigned int reg)
 	case EC_ADDR_TRIGGER:
 	case EC_ADDR_SWITCH_STATUS:
 	case EC_ADDR_OEM_4:
+	case EC_ADDR_POWER_MODE_LED:
 	case EC_ADDR_CHARGE_CTRL:
+	case EC_ADDR_AP_OEM_6:
 	case EC_ADDR_LIGHTBAR_BAT_CTRL:
 	case EC_ADDR_LIGHTBAR_BAT_RED:
 	case EC_ADDR_LIGHTBAR_BAT_GREEN:
@@ -539,6 +589,7 @@ static bool uniwill_volatile_reg(struct device *dev, unsigned int reg)
 	case EC_ADDR_TRIGGER:
 	case EC_ADDR_SWITCH_STATUS:
 	case EC_ADDR_CHARGE_CTRL:
+	case EC_ADDR_AP_OEM_6:
 		return true;
 	default:
 		return false;
@@ -1234,18 +1285,215 @@ static int uniwill_battery_init(struct uniwill_data *data)
 	return devm_battery_hook_register(data->dev, &data->hook);
 }
 
+static int uniwill_platform_profile_probe(void *drvdata, unsigned long *choices)
+{
+	set_bit(PLATFORM_PROFILE_PERFORMANCE, choices);
+	set_bit(PLATFORM_PROFILE_BALANCED, choices);
+	set_bit(PLATFORM_PROFILE_QUIET, choices);
+
+	return 0;
+}
+
+static int uniwill_platform_profile_get(struct device *dev, enum platform_profile_option *profile)
+{
+	struct uniwill_data *data = dev_get_drvdata(dev);
+
+	guard(mutex)(&data->profile_lock);
+
+	return data->current_profile;
+}
+
+static int uniwill_set_fan_tables(struct uniwill_data *data, struct uniwill_fan_tables *tables)
+{
+	int ret;
+
+	ret = regmap_bulk_write(data->regmap, EC_ADDR_CPU_TEMP_END_TABLE, tables,
+				sizeof(*tables));
+	if (ret < 0)
+		return ret;
+
+	/* Signal the EC to reload the fan tables */
+	return regmap_write_bits(data->regmap, EC_ADDR_AP_OEM_6, ENABLE_UNIVERSAL_FAN_CTRL,
+				 ENABLE_UNIVERSAL_FAN_CTRL);
+}
+
+static int uniwill_platform_profile_set(struct device *dev, enum platform_profile_option profile)
+{
+	struct uniwill_data *data = dev_get_drvdata(dev);
+	struct uniwill_fan_tables *tables;
+	unsigned int value;
+	int ret;
+
+	switch (profile) {
+	case PLATFORM_PROFILE_PERFORMANCE:
+		tables = &data->performance_tables;
+		value = POWER_MODE_LED_PERFORMANCE;
+		break;
+	case PLATFORM_PROFILE_BALANCED:
+		tables = &data->standard_tables;
+		value = POWER_MODE_LED_BALANCED;
+		break;
+	case PLATFORM_PROFILE_QUIET:
+		tables = &data->quiet_tables;
+		value = POWER_MODE_LED_BATTERY_SAVER;
+		break;
+	default:
+		return -EINVAL;
+	}
+
+	guard(mutex)(&data->profile_lock);
+
+	ret = uniwill_set_fan_tables(data, tables);
+	if (ret < 0)
+		return ret;
+
+	if (supported_features & UNIWILL_FEATURE_POWER_MODE_LED) {
+		/*
+		 * Failure to update the power mode LED is non-critical, so we
+		 * do not propagate the error in such a case.
+		 */
+		ret = regmap_write(data->regmap, EC_ADDR_POWER_MODE_LED, value);
+		if (ret < 0)
+			dev_err(data->dev, "Failed to update power mode LED: %d\n", ret);
+	}
+
+	data->current_profile = profile;
+
+	return 0;
+}
+
+static const struct platform_profile_ops uniwill_platform_profile_ops = {
+	.probe = uniwill_platform_profile_probe,
+	.profile_get = uniwill_platform_profile_get,
+	.profile_set = uniwill_platform_profile_set,
+};
+
+static int uniwill_fan_tables_init(struct uniwill_data *data, enum uniwill_fan_mode mode,
+				   struct uniwill_fan_tables *tables)
+{
+	unsigned int magic1, magic2;
+	int ret;
+
+	ret = regmap_write(data->regmap, EC_ADDR_GPU_FAN_SPEED_TABLE + 0xF, mode);
+	if (ret < 0)
+		return ret;
+
+	ret = regmap_write(data->regmap, EC_ADDR_GPU_FAN_SPEED_TABLE + 0xD, FAN_TABLE_MAGIC_1);
+	if (ret < 0)
+		return ret;
+
+	ret = regmap_write(data->regmap, EC_ADDR_GPU_FAN_SPEED_TABLE + 0xE, FAN_TABLE_MAGIC_2);
+	if (ret < 0)
+		return ret;
+
+	for (int i = 0; i < FAN_TABLE_MAX_RETRIES; i++) {
+		/*
+		 * Marking the whole fan table as volatile would cause a massive performance hit,
+		 * so we manually invalidate the regmap cache here.
+		 */
+		ret = regcache_drop_region(data->regmap, EC_ADDR_CPU_TEMP_END_TABLE,
+					   EC_ADDR_GPU_FAN_SPEED_TABLE + 0xF);
+		if (ret < 0)
+			return ret;
+
+		ret = regmap_read(data->regmap, EC_ADDR_GPU_FAN_SPEED_TABLE + 0xD, &magic1);
+		if (ret < 0)
+			return ret;
+
+		ret = regmap_read(data->regmap, EC_ADDR_GPU_FAN_SPEED_TABLE + 0xE, &magic2);
+		if (ret < 0)
+			return ret;
+
+		/* Wait till the fan table has been updated */
+		if (magic1 == FAN_TABLE_MAGIC_1 && magic2 == FAN_TABLE_MAGIC_2) {
+			fsleep(10 * USEC_PER_MSEC);
+			continue;
+		}
+
+		return regmap_bulk_read(data->regmap, EC_ADDR_CPU_TEMP_END_TABLE, tables,
+					sizeof(*tables));
+	}
+
+	return -ETIMEDOUT;
+}
+
+static int uniwill_fan_table_init(struct uniwill_data *data)
+{
+	int ret;
+
+	ret = uniwill_fan_tables_init(data, FAN_MODE_PERFORMANCE, &data->performance_tables);
+	if (ret < 0)
+		return ret;
+
+	ret = uniwill_fan_tables_init(data, FAN_MODE_QUIET, &data->quiet_tables);
+	if (ret < 0)
+		return ret;
+
+	/* Needs to come last in order to leave the fan tables in standard mode */
+	ret = uniwill_fan_tables_init(data, FAN_MODE_STANDARD, &data->standard_tables);
+	if (ret < 0)
+		return ret;
+
+	/* Signal the EC to reload the fan tables */
+	return regmap_write_bits(data->regmap, EC_ADDR_AP_OEM_6, ENABLE_UNIVERSAL_FAN_CTRL,
+				 ENABLE_UNIVERSAL_FAN_CTRL);
+}
+
+static int uniwill_platform_profile_init(struct uniwill_data *data)
+{
+	int ret;
+
+	if (!(supported_features & UNIWILL_FEATURE_FAN_TABLE))
+		return 0;
+
+	ret = devm_mutex_init(data->dev, &data->profile_lock);
+	if (ret < 0)
+		return ret;
+
+	ret = uniwill_fan_table_init(data);
+	if (ret < 0)
+		return ret;
+
+	if (supported_features & UNIWILL_FEATURE_POWER_MODE_LED) {
+		ret = regmap_write(data->regmap, EC_ADDR_POWER_MODE_LED, POWER_MODE_LED_BALANCED);
+		if (ret < 0)
+			return ret;
+	}
+
+	data->current_profile = PLATFORM_PROFILE_BALANCED;
+	data->profile_device = devm_platform_profile_register(data->dev, "uniwill-laptop", data,
+							      &uniwill_platform_profile_ops);
+	if (IS_ERR(data->profile_device))
+		return PTR_ERR(data->profile_device);
+
+	return 0;
+}
+
 static int uniwill_notifier_call(struct notifier_block *nb, unsigned long action, void *dummy)
 {
 	struct uniwill_data *data = container_of(nb, struct uniwill_data, nb);
 	struct uniwill_battery_entry *entry;
+	int ret;
 
 	switch (action) {
 	case UNIWILL_OSD_BATTERY_ALERT:
+		if (!(supported_features & UNIWILL_FEATURE_BATTERY))
+			return NOTIFY_DONE;
+
 		mutex_lock(&data->battery_lock);
 		list_for_each_entry(entry, &data->batteries, head) {
 			power_supply_changed(entry->battery);
 		}
 		mutex_unlock(&data->battery_lock);
+
+		return NOTIFY_OK;
+	case UNIWILL_OSD_PERFORMANCE_MODE_TOGGLE:
+		if (!(supported_features & UNIWILL_FEATURE_FAN_TABLE))
+			return NOTIFY_DONE;
+
+		ret = platform_profile_cycle();
+		if (ret < 0)
+			dev_err(data->dev, "Failed to cycle platform profile: %d\n", ret);
 
 		return NOTIFY_OK;
 	default:
@@ -1354,6 +1602,10 @@ static int uniwill_probe(struct platform_device *pdev)
 	if (ret < 0)
 		return ret;
 
+	ret = uniwill_platform_profile_init(data);
+	if (ret < 0)
+		return ret;
+
 	return uniwill_input_init(data);
 }
 
@@ -1436,6 +1688,16 @@ static int uniwill_resume_battery(struct uniwill_data *data)
 				  data->last_charge_ctrl);
 }
 
+static int uniwill_resume_platform_profile(struct uniwill_data *data)
+{
+	if (!(supported_features & UNIWILL_FEATURE_FAN_TABLE))
+		return 0;
+
+	/* Signal the EC to reload the fan tables */
+	return regmap_write_bits(data->regmap, EC_ADDR_AP_OEM_6, ENABLE_UNIVERSAL_FAN_CTRL,
+				 ENABLE_UNIVERSAL_FAN_CTRL);
+}
+
 static int uniwill_resume(struct device *dev)
 {
 	struct uniwill_data *data = dev_get_drvdata(dev);
@@ -1451,7 +1713,11 @@ static int uniwill_resume(struct device *dev)
 	if (ret < 0)
 		return ret;
 
-	return uniwill_resume_battery(data);
+	ret = uniwill_resume_battery(data);
+	if (ret < 0)
+		return ret;
+
+	return uniwill_resume_platform_profile(data);
 }
 
 static DEFINE_SIMPLE_DEV_PM_OPS(uniwill_pm_ops, uniwill_suspend, uniwill_resume);
@@ -1488,7 +1754,9 @@ static const struct dmi_system_id uniwill_dmi_table[] __initconst = {
 					UNIWILL_FEATURE_SUPER_KEY_TOGGLE |
 					UNIWILL_FEATURE_TOUCHPAD_TOGGLE |
 					UNIWILL_FEATURE_BATTERY |
-					UNIWILL_FEATURE_HWMON),
+					UNIWILL_FEATURE_HWMON |
+					UNIWILL_FEATURE_FAN_TABLE |
+					UNIWILL_FEATURE_POWER_MODE_LED),
 	},
 	{
 		.ident = "Intel NUC x15",
@@ -1501,7 +1769,9 @@ static const struct dmi_system_id uniwill_dmi_table[] __initconst = {
 					UNIWILL_FEATURE_TOUCHPAD_TOGGLE |
 					UNIWILL_FEATURE_LIGHTBAR |
 					UNIWILL_FEATURE_BATTERY |
-					UNIWILL_FEATURE_HWMON),
+					UNIWILL_FEATURE_HWMON |
+					UNIWILL_FEATURE_FAN_TABLE |
+					UNIWILL_FEATURE_POWER_MODE_LED),
 	},
 	{ }
 };
