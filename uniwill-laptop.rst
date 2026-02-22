@@ -80,6 +80,10 @@ Keep in mind that due to hardware design choices, the driver does not support th
 ``0x000000`` (black), instead it will fall back to ``0x010101`` (faint white). In order to
 disable the keyboard backlight, the standard LED brightness setting has to be used instead.
 
+Some devices, such as the AiStone X4SP4NAL, require an initial press of the FN+Backlight button
+combo, before the brightness of the keyboard backlight can be controlled through the sysfs
+attributes provided by the ``uniwill-laptop`` driver.
+
 AC Auto Boot
 ------------
 

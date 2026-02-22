@@ -2360,6 +2360,18 @@ static struct uniwill_device_descriptor phxarx1_phxaqf1_descriptor __initdata = 
 	.probe = phxarx1_phxaqf1_probe,
 };
 
+static struct uniwill_device_descriptor x4sp4nal_descriptor __initdata = {
+	.features = UNIWILL_FEATURE_FN_LOCK |
+		    UNIWILL_FEATURE_SUPER_KEY |
+		    UNIWILL_FEATURE_BATTERY_CHARGE_MODES |
+		    UNIWILL_FEATURE_CPU_TEMP |
+		    UNIWILL_FEATURE_PRIMARY_FAN |
+		    UNIWILL_FEATURE_SECONDARY_FAN |
+		    UNIWILL_FEATURE_KEYBOARD_BACKLIGHT |
+		    UNIWILL_FEATURE_AC_AUTO_BOOT |
+		    UNIWILL_FEATURE_USB_POWERSHARE,
+};
+
 static struct uniwill_device_descriptor xxkk4nax_xxsp4nax_descriptor __initdata = {
 	.features = UNIWILL_FEATURE_FN_LOCK |
 		    UNIWILL_FEATURE_SUPER_KEY |
@@ -2379,6 +2391,14 @@ static struct uniwill_device_descriptor tux_featureset_1_descriptor __initdata =
 static struct uniwill_device_descriptor empty_descriptor __initdata = {};
 
 static const struct dmi_system_id uniwill_dmi_table[] __initconst = {
+	{
+		.ident = "AiStone X4SP4NAL",
+		.matches = {
+			DMI_MATCH(DMI_SYS_VENDOR, "AiStone"),
+			DMI_EXACT_MATCH(DMI_BOARD_NAME, "X4SP4NAL"),
+		},
+		.driver_data = &x4sp4nal_descriptor,
+	},
 	{
 		.ident = "XMG FUSION 15",
 		.matches = {
