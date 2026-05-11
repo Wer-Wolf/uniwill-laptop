@@ -1682,6 +1682,10 @@ static struct uniwill_device_descriptor tux_featureset_1_descriptor __initdata =
 	.features = UNIWILL_FEATURE_NVIDIA_CTGP_CONTROL
 };
 
+static struct uniwill_device_descriptor xxkk4nax_descriptor __initdata = {
+	.features = UNIWILL_FEATURE_BATTERY
+};
+
 static struct uniwill_device_descriptor empty_descriptor __initdata = {};
 
 static const struct dmi_system_id uniwill_dmi_table[] __initconst = {
@@ -1803,7 +1807,7 @@ static const struct dmi_system_id uniwill_dmi_table[] __initconst = {
 			DMI_MATCH(DMI_SYS_VENDOR, "TUXEDO"),
 			DMI_EXACT_MATCH(DMI_BOARD_NAME, "XxKK4NAx_XxSP4NAx"),
 		},
-		.driver_data = &empty_descriptor,
+		.driver_data = &xxkk4nax_descriptor,
 	},
 	{
 		.ident = "TUXEDO InfinityBook Pro 15 Gen10 Intel",
