@@ -2552,6 +2552,7 @@ static struct uniwill_device_descriptor tux_featureset_2_nvidia_descriptor __ini
 static struct uniwill_device_descriptor tux_featureset_3_descriptor __initdata = {
 	.features = UNIWILL_FEATURE_FN_LOCK |
 		    UNIWILL_FEATURE_SUPER_KEY |
+		    UNIWILL_FEATURE_BATTERY_CHARGE_LIMIT |
 		    UNIWILL_FEATURE_CPU_TEMP |
 		    UNIWILL_FEATURE_PRIMARY_FAN |
 		    UNIWILL_FEATURE_SECONDARY_FAN |
