@@ -20,7 +20,7 @@
 #include <linux/types.h>
 #include <linux/wmi.h>
 
-#include "uniwill-wmi.h"
+#include "internal.h"
 
 #define DRIVER_NAME		"uniwill-wmi"
 #define UNIWILL_EVENT_GUID	"ABBC0F72-8EA1-11D1-00A0-C90629100000"
@@ -50,7 +50,7 @@ static void uniwill_wmi_notify(struct wmi_device *wdev, union acpi_object *obj)
 	u32 value;
 	int ret;
 
-	if (obj->type != ACPI_TYPE_INTEGER)
+	if (!obj || obj->type != ACPI_TYPE_INTEGER)
 		return;
 
 	value = obj->integer.value;

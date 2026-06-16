@@ -1,14 +1,12 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
- * Linux hotkey driver for Uniwill notebooks.
+ * Uniwill event code definitions.
  *
  * Copyright (C) 2025 Armin Wolf <W_Armin@gmx.de>
  */
 
-#ifndef UNIWILL_WMI_H
-#define UNIWILL_WMI_H
-
-#include <linux/init.h>
+#ifndef UNIWILL_EVENTS_H
+#define UNIWILL_EVENTS_H
 
 #define UNIWILL_OSD_CAPSLOCK			0x01
 #define UNIWILL_OSD_NUMLOCK			0x02
@@ -119,13 +117,4 @@
 
 #define UNIWILL_OSD_KBD_BACKLIGHT_CHANGED	0xF0
 
-struct device;
-struct notifier_block;
-
-int devm_uniwill_wmi_register_notifier(struct device *dev, struct notifier_block *nb);
-
-int __init uniwill_wmi_register_driver(void);
-
-void __exit uniwill_wmi_unregister_driver(void);
-
-#endif /* UNIWILL_WMI_H */
+#endif /* UNIWILL_EVENTS_H */

@@ -64,7 +64,7 @@ attribute (0 means that the battery is currently not charging).
 Additionally the driver signals the presence of battery charging issues through the standard
 ``health`` power supply sysfs attribute.
 
-It also let you set whether an USB-C power source should prioritise charging the battery or
+It also lets you set whether a USB-C power source should prioritise charging the battery or
 delivering immediate power to the cpu. See Documentation/ABI/testing/sysfs-driver-uniwill-laptop for
 details.
 
@@ -91,7 +91,7 @@ Keep in mind that due to hardware design choices, the driver does not support th
 disable the keyboard backlight, the standard LED brightness setting has to be used instead.
 
 Configurable TGP
---------
+----------------
 
 The ``uniwill-laptop`` driver allows to set the configurable TGP for devices with NVIDIA GPUs that
 allow it.

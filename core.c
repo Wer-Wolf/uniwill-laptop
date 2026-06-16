@@ -11,16 +11,12 @@
 
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 
-#include <linux/acpi.h>
 #include <linux/array_size.h>
 #include <linux/bits.h>
 #include <linux/bitfield.h>
 #include <linux/cleanup.h>
 #include <linux/debugfs.h>
-#include <linux/delay.h>
 #include <linux/device.h>
-#include <linux/device/driver.h>
-#include <linux/dmi.h>
 #include <linux/errno.h>
 #include <linux/fixp-arith.h>
 #include <linux/hwmon.h>
@@ -38,8 +34,6 @@
 #include <linux/module.h>
 #include <linux/mutex.h>
 #include <linux/notifier.h>
-#include <linux/platform_device.h>
-#include <linux/pm.h>
 #include <linux/printk.h>
 #include <linux/regmap.h>
 #include <linux/string.h>
@@ -49,300 +43,9 @@
 
 #include <acpi/battery.h>
 
-#include "uniwill-wmi.h"
-
-#define EC_ADDR_BAT_POWER_UNIT_1	0x0400
-
-#define EC_ADDR_BAT_POWER_UNIT_2	0x0401
-
-#define EC_ADDR_BAT_DESIGN_CAPACITY_1	0x0402
-
-#define EC_ADDR_BAT_DESIGN_CAPACITY_2	0x0403
-
-#define EC_ADDR_BAT_FULL_CAPACITY_1	0x0404
-
-#define EC_ADDR_BAT_FULL_CAPACITY_2	0x0405
-
-#define EC_ADDR_BAT_DESIGN_VOLTAGE_1	0x0408
-
-#define EC_ADDR_BAT_DESIGN_VOLTAGE_2	0x0409
-
-#define EC_ADDR_BAT_STATUS_1		0x0432
-#define BAT_DISCHARGING			BIT(0)
-
-#define EC_ADDR_BAT_STATUS_2		0x0433
-
-#define EC_ADDR_BAT_CURRENT_1		0x0434
-
-#define EC_ADDR_BAT_CURRENT_2		0x0435
-
-#define EC_ADDR_BAT_REMAIN_CAPACITY_1	0x0436
-
-#define EC_ADDR_BAT_REMAIN_CAPACITY_2	0x0437
-
-#define EC_ADDR_BAT_VOLTAGE_1		0x0438
-
-#define EC_ADDR_BAT_VOLTAGE_2		0x0439
-
-#define EC_ADDR_CPU_TEMP		0x043E
-
-#define EC_ADDR_GPU_TEMP		0x044F
-
-#define EC_ADDR_SYSTEM_ID		0x0456
-#define HAS_GPU				BIT(7)
-
-#define EC_ADDR_MAIN_FAN_RPM_1		0x0464
-
-#define EC_ADDR_MAIN_FAN_RPM_2		0x0465
-
-#define EC_ADDR_SCREEN_STATUS		0x0466
-#define SCREEN_SUSPENDED		BIT(6)
-
-#define EC_ADDR_SECOND_FAN_RPM_1	0x046C
-
-#define EC_ADDR_SECOND_FAN_RPM_2	0x046D
-
-#define EC_ADDR_DEVICE_STATUS		0x047B
-#define WIFI_STATUS_ON			BIT(7)
-/* BIT(5) is also unset depending on the rfkill state (bluetooth?) */
-
-#define EC_ADDR_BAT_ALERT		0x0494
-
-#define EC_ADDR_BAT_CYCLE_COUNT_1	0x04A6
-
-#define EC_ADDR_BAT_CYCLE_COUNT_2	0x04A7
-
-#define EC_ADDR_OEM_9			0x0726
-#define AC_AUTO_BOOT_ENABLE		BIT(3)
-
-#define EC_ADDR_PROJECT_ID		0x0740
-#define PROJECT_ID_NONE			0x00
-#define PROJECT_ID_GI			0x01
-#define PROJECT_ID_GJ			0x02
-#define PROJECT_ID_GK			0x03
-#define PROJECT_ID_GICN			0x04
-#define PROJECT_ID_GJCN			0x05
-#define PROJECT_ID_GK5CN_X		0x06
-#define PROJECT_ID_GK7CN_S		0x07
-#define PROJECT_ID_GK7CPCS_GK5CQ7Z	0x08
-#define PROJECT_ID_PF			0x09
-#define PROJECT_ID_GK5CP_4X_5X_6X	0x0A
-#define PROJECT_ID_IDP			0x0B
-#define PROJECT_ID_IDY_6Y		0x0C
-#define PROJECT_ID_IDY_7Y		0x0D
-#define PROJECT_ID_PF4MU_PF4MN_PF5MU	0x0E
-#define PROJECT_ID_CML_GAMING		0x0F
-#define PROJECT_ID_GK7NXXR		0x10
-#define PROJECT_ID_GM5MU1Y		0x11
-#define PROJECT_ID_PH4TRX1		0x12
-#define PROJECT_ID_PH4TUX1		0x13
-#define PROJECT_ID_PH4TQX1		0x14
-#define PROJECT_ID_PH6TRX1		0x15
-#define PROJECT_ID_PH6TQXX		0x16
-#define PROJECT_ID_PHXAXXX		0x17
-#define PROJECT_ID_PHXPXXX		0x18
-
-#define EC_ADDR_AP_OEM			0x0741
-#define	ENABLE_MANUAL_CTRL		BIT(0)
-#define ITE_KBD_EFFECT_REACTIVE		BIT(3)
-#define FAN_ABNORMAL			BIT(5)
-
-#define EC_ADDR_SUPPORT_5		0x0742
-#define FAN_TURBO_SUPPORTED		BIT(4)
-#define FAN_SUPPORT			BIT(5)
-
-#define EC_ADDR_CTGP_DB_CTRL		0x0743
-#define CTGP_DB_GENERAL_ENABLE		BIT(0)
-#define CTGP_DB_DB_ENABLE		BIT(1)
-#define CTGP_DB_CTGP_ENABLE		BIT(2)
-
-#define EC_ADDR_CTGP_DB_CTGP_OFFSET	0x0744
-
-#define EC_ADDR_CTGP_DB_TPP_OFFSET	0x0745
-
-#define EC_ADDR_CTGP_DB_DB_OFFSET	0x0746
-
-#define EC_ADDR_LIGHTBAR_AC_CTRL	0x0748
-#define LIGHTBAR_APP_EXISTS		BIT(0)
-#define LIGHTBAR_POWER_SAVE		BIT(1)
-#define LIGHTBAR_S0_OFF			BIT(2)
-#define LIGHTBAR_S3_OFF			BIT(3)	// Breathing animation when suspended
-#define LIGHTBAR_WELCOME		BIT(7)	// Rainbow animation
-
-#define EC_ADDR_LIGHTBAR_AC_RED		0x0749
-
-#define EC_ADDR_LIGHTBAR_AC_GREEN	0x074A
-
-#define EC_ADDR_LIGHTBAR_AC_BLUE	0x074B
-
-#define EC_ADDR_BIOS_OEM		0x074E
-#define FN_LOCK_STATUS			BIT(4)
-
-#define EC_ADDR_MANUAL_FAN_CTRL		0x0751
-#define FAN_LEVEL_MASK			GENMASK(2, 0)
-#define FAN_MODE_TURBO			BIT(4)
-#define FAN_MODE_HIGH			BIT(5)
-#define FAN_MODE_BOOST			BIT(6)
-#define FAN_MODE_USER			BIT(7)
-
-#define EC_ADDR_PWM_1			0x075B
-
-#define EC_ADDR_PWM_2			0x075C
-
-/* Unreliable */
-#define EC_ADDR_SUPPORT_1		0x0765
-#define AIRPLANE_MODE			BIT(0)
-#define GPS_SWITCH			BIT(1)
-#define OVERCLOCK			BIT(2)
-#define MACRO_KEY			BIT(3)
-#define SHORTCUT_KEY			BIT(4)
-#define SUPER_KEY_LOCK			BIT(5)
-#define LIGHTBAR			BIT(6)
-#define FAN_BOOST			BIT(7)
-
-#define EC_ADDR_SUPPORT_2		0x0766
-#define SILENT_MODE			BIT(0)
-#define USB_CHARGING			BIT(1)
-#define RGB_KEYBOARD			BIT(2)
-#define CHINA_MODE			BIT(5)
-#define MY_BATTERY			BIT(6)
-
-#define EC_ADDR_TRIGGER			0x0767
-#define TRIGGER_SUPER_KEY_LOCK		BIT(0)
-#define TRIGGER_LIGHTBAR		BIT(1)
-#define TRIGGER_FAN_BOOST		BIT(2)
-#define TRIGGER_SILENT_MODE		BIT(3)
-#define TRIGGER_USB_CHARGING		BIT(4)
-#define RGB_APPLY_COLOR			BIT(5)
-#define RGB_LOGO_EFFECT			BIT(6)
-#define RGB_RAINBOW_EFFECT		BIT(7)
-
-#define EC_ADDR_SWITCH_STATUS		0x0768
-#define SUPER_KEY_LOCK_STATUS		BIT(0)
-#define LIGHTBAR_STATUS			BIT(1)
-#define FAN_BOOST_STATUS		BIT(2)
-#define MACRO_KEY_STATUS		BIT(3)
-#define MY_BAT_POWER_BAT_STATUS		BIT(4)
-
-#define EC_ADDR_RGB_RED			0x0769
-
-#define EC_ADDR_RGB_GREEN		0x076A
-
-#define EC_ADDR_RGB_BLUE		0x076B
-
-#define EC_ADDR_ROMID_START		0x0770
-#define ROMID_LENGTH			14
-
-#define EC_ADDR_ROMID_EXTRA_1		0x077E
-
-#define EC_ADDR_ROMID_EXTRA_2		0x077F
-
-#define EC_ADDR_BIOS_OEM_2		0x0782
-#define FAN_V2_NEW			BIT(0)
-#define FAN_QKEY			BIT(1)
-#define FAN_TABLE_OFFICE_MODE		BIT(2)
-#define FAN_V3				BIT(3)
-#define DEFAULT_MODE			BIT(4)
-#define ENABLE_CHINA_MODE		BIT(6)
-
-#define EC_ADDR_PL1_SETTING		0x0783
-
-#define EC_ADDR_PL2_SETTING		0x0784
-
-#define EC_ADDR_PL4_SETTING		0x0785
-
-#define EC_ADDR_FAN_DEFAULT		0x0786
-#define FAN_CURVE_LENGTH		5
-
-#define EC_ADDR_KBD_STATUS		0x078C
-#define KBD_WHITE_ONLY			BIT(0)
-#define KBD_POWER_OFF			BIT(1)
-#define KBD_TURBO_LEVEL_MASK		GENMASK(3, 2)
-#define KBD_APPLY			BIT(4)
-#define KBD_BRIGHTNESS_MASK		GENMASK(7, 5)
-
-#define EC_ADDR_FAN_CTRL		0x078E
-#define FAN3P5				BIT(1)
-#define CHARGING_PROFILE		BIT(3)
-#define UNIVERSAL_FAN_CTRL		BIT(6)
-
-#define EC_ADDR_BIOS_OEM_3		0x07A3
-#define FAN_REDUCED_DURY_CYCLE		BIT(5)
-#define FAN_ALWAYS_ON			BIT(6)
-
-#define EC_ADDR_BIOS_BYTE		0x07A4
-#define FN_LOCK_SWITCH			BIT(3)
-
-#define EC_ADDR_OEM_3			0x07A5
-#define POWER_LED_MASK			GENMASK(1, 0)
-#define POWER_LED_LEFT			0x00
-#define POWER_LED_BOTH			0x01
-#define POWER_LED_NONE			0x02
-#define FAN_QUIET			BIT(2)
-#define OVERBOOST			BIT(4)
-#define HIGH_POWER			BIT(7)
-
-#define EC_ADDR_OEM_4			0x07A6
-#define OVERBOOST_DYN_TEMP_OFF		BIT(1)
-#define CHARGING_PROFILE_MASK		GENMASK(5, 4)
-#define CHARGING_PROFILE_HIGH_CAPACITY	0x00
-#define CHARGING_PROFILE_BALANCED	0x01
-#define CHARGING_PROFILE_STATIONARY	0x02
-#define TOUCHPAD_TOGGLE_OFF		BIT(6)
-
-#define EC_ADDR_CHARGE_CTRL		0x07B9
-#define CHARGE_CTRL_MASK		GENMASK(6, 0)
-#define CHARGE_CTRL_REACHED		BIT(7)
-
-#define EC_ADDR_UNIVERSAL_FAN_CTRL	0x07C5
-#define SPLIT_TABLES			BIT(7)
-
-#define EC_ADDR_AP_OEM_6		0x07C6
-#define ENABLE_UNIVERSAL_FAN_CTRL	BIT(2)
-#define BATTERY_CHARGE_FULL_OVER_24H	BIT(3)
-#define BATTERY_ERM_STATUS_REACHED	BIT(4)
-
-#define EC_ADDR_USB_C_POWER_PRIORITY	0x07CC
-#define USB_C_POWER_PRIORITY		BIT(7)
-
-/* Same bits as EC_ADDR_LIGHTBAR_AC_CTRL except LIGHTBAR_S3_OFF */
-#define EC_ADDR_LIGHTBAR_BAT_CTRL	0x07E2
-
-#define EC_ADDR_LIGHTBAR_BAT_RED	0x07E3
-
-#define EC_ADDR_LIGHTBAR_BAT_GREEN	0x07E4
-
-#define EC_ADDR_LIGHTBAR_BAT_BLUE	0x07E5
-
-#define EC_ADDR_CPU_TEMP_END_TABLE	0x0F00
-
-#define EC_ADDR_CPU_TEMP_START_TABLE	0x0F10
-
-#define EC_ADDR_CPU_FAN_SPEED_TABLE	0x0F20
-
-#define EC_ADDR_GPU_TEMP_END_TABLE	0x0F30
-
-#define EC_ADDR_GPU_TEMP_START_TABLE	0x0F40
-
-#define EC_ADDR_GPU_FAN_SPEED_TABLE	0x0F50
-
-/*
- * Those two registers technically allow for manual fan control,
- * but are unstable on some models and are likely not meant to
- * be used by applications as they are only accessible when using
- * the WMI interface.
- */
-#define EC_ADDR_PWM_1_WRITEABLE		0x1804
-
-#define EC_ADDR_PWM_2_WRITEABLE		0x1809
-
-#define DRIVER_NAME	"uniwill"
-
-/*
- * The OEM software always sleeps up to 6 ms after reading/writing EC
- * registers, so we emulate this behaviour for maximum compatibility.
- */
-#define UNIWILL_EC_DELAY_US	6000
+#include "events.h"
+#include "internal.h"
+#include "registers.h"
 
 #define PWM_MAX			200
 #define FAN_TABLE_LENGTH	16
@@ -352,23 +55,6 @@
 #define KBD_LED_CHANNELS	3
 #define KBD_LED_MAX_INTENSITY	50
 
-#define UNIWILL_FEATURE_FN_LOCK			BIT(0)
-#define UNIWILL_FEATURE_SUPER_KEY		BIT(1)
-#define UNIWILL_FEATURE_TOUCHPAD_TOGGLE		BIT(2)
-#define UNIWILL_FEATURE_LIGHTBAR		BIT(3)
-#define UNIWILL_FEATURE_BATTERY_CHARGE_LIMIT	BIT(4)
-/* Mutually exclusive with the charge limit feature */
-#define UNIWILL_FEATURE_BATTERY_CHARGE_MODES	BIT(5)
-#define UNIWILL_FEATURE_CPU_TEMP		BIT(6)
-#define UNIWILL_FEATURE_GPU_TEMP		BIT(7)
-#define UNIWILL_FEATURE_PRIMARY_FAN		BIT(8)
-#define UNIWILL_FEATURE_SECONDARY_FAN		BIT(9)
-#define UNIWILL_FEATURE_NVIDIA_CTGP_CONTROL	BIT(10)
-#define UNIWILL_FEATURE_USB_C_POWER_PRIORITY	BIT(11)
-#define UNIWILL_FEATURE_KEYBOARD_BACKLIGHT	BIT(12)
-#define UNIWILL_FEATURE_AC_AUTO_BOOT		BIT(13)
-#define UNIWILL_FEATURE_USB_POWERSHARE		BIT(14)
-
 enum usb_c_power_priority_options {
 	USB_C_POWER_PRIORITY_CHARGING = 0,
 	USB_C_POWER_PRIORITY_PERFORMANCE,
@@ -376,24 +62,29 @@ enum usb_c_power_priority_options {
 
 struct uniwill_data {
 	struct device *dev;
-	acpi_handle handle;
 	struct regmap *regmap;
-	unsigned int features;
+	struct uniwill_device_config config;
 	u8 project_id;
 	struct acpi_battery_hook hook;
-	unsigned int last_charge_ctrl;
 	struct mutex battery_lock;	/* Protects the list of currently registered batteries */
-	unsigned int last_status;
-	unsigned int last_switch_status;
-	unsigned int last_trigger;
+	union {
+		struct {
+			/* Protects writes to last_charge_type */
+			struct mutex charge_type_lock;
+			enum power_supply_charge_type last_charge_type;
+		};
+		unsigned int last_charge_ctrl;
+	};
+	bool last_fn_lock_state;
+	bool last_super_key_enable_state;
+	bool last_touchpad_toggle_enable_state;
+	bool last_usb_powershare_high_state;
 	struct mutex super_key_lock;	/* Protects the toggling of the super key lock state */
 	struct list_head batteries;
 	struct mutex led_lock;		/* Protects writes to the lightbar registers */
-	unsigned int lightbar_max_brightness;
 	struct led_classdev_mc led_mc_cdev;
 	struct mc_subled led_mc_subled_info[LED_CHANNELS];
 	bool single_color_kbd;
-	unsigned int kbd_led_max_brightness;
 	unsigned int last_kbd_status;
 	union {
 		struct {
@@ -416,23 +107,13 @@ struct uniwill_battery_entry {
 	struct power_supply *battery;
 };
 
-struct uniwill_device_descriptor {
-	unsigned int features;
-	unsigned int kbd_led_max_brightness;
-	unsigned int lightbar_max_brightness;
-	/* Executed during driver probing */
-	int (*probe)(struct uniwill_data *data);
-};
-
-static bool force;
-module_param_unsafe(force, bool, 0);
-MODULE_PARM_DESC(force, "Force loading without checking for supported devices\n");
-
 /*
  * Contains device specific data like the feature bitmap since
  * the associated registers are not always reliable.
  */
 static struct uniwill_device_descriptor device_descriptor __ro_after_init;
+
+static bool acpi_interface_available __ro_after_init;
 
 static const char * const uniwill_temp_labels[] = {
 	"CPU",
@@ -502,79 +183,14 @@ static const struct key_entry uniwill_keymap[] = {
 static inline bool uniwill_device_supports(const struct uniwill_data *data,
 					   unsigned int features)
 {
-	return (data->features & features) == features;
+	return (data->config.features & features) == features;
 }
 
-static int uniwill_ec_reg_write(void *context, unsigned int reg, unsigned int val)
+static inline bool uniwill_device_supports_any(const struct uniwill_data *data,
+					       unsigned int features)
 {
-	union acpi_object params[2] = {
-		{
-			.integer = {
-				.type = ACPI_TYPE_INTEGER,
-				.value = reg,
-			},
-		},
-		{
-			.integer = {
-				.type = ACPI_TYPE_INTEGER,
-				.value = val,
-			},
-		},
-	};
-	struct uniwill_data *data = context;
-	struct acpi_object_list input = {
-		.count = ARRAY_SIZE(params),
-		.pointer = params,
-	};
-	acpi_status status;
-
-	status = acpi_evaluate_object(data->handle, "ECRW", &input, NULL);
-	if (ACPI_FAILURE(status))
-		return -EIO;
-
-	usleep_range(UNIWILL_EC_DELAY_US, UNIWILL_EC_DELAY_US * 2);
-
-	return 0;
+	return data->config.features & features;
 }
-
-static int uniwill_ec_reg_read(void *context, unsigned int reg, unsigned int *val)
-{
-	union acpi_object params[1] = {
-		{
-			.integer = {
-				.type = ACPI_TYPE_INTEGER,
-				.value = reg,
-			},
-		},
-	};
-	struct uniwill_data *data = context;
-	struct acpi_object_list input = {
-		.count = ARRAY_SIZE(params),
-		.pointer = params,
-	};
-	unsigned long long output;
-	acpi_status status;
-
-	status = acpi_evaluate_integer(data->handle, "ECRR", &input, &output);
-	if (ACPI_FAILURE(status))
-		return -EIO;
-
-	if (output > U8_MAX)
-		return -ENXIO;
-
-	usleep_range(UNIWILL_EC_DELAY_US, UNIWILL_EC_DELAY_US * 2);
-
-	*val = output;
-
-	return 0;
-}
-
-static const struct regmap_bus uniwill_ec_bus = {
-	.reg_write = uniwill_ec_reg_write,
-	.reg_read = uniwill_ec_reg_read,
-	.reg_format_endian_default = REGMAP_ENDIAN_LITTLE,
-	.val_format_endian_default = REGMAP_ENDIAN_LITTLE,
-};
 
 static bool uniwill_writeable_reg(struct device *dev, unsigned int reg)
 {
@@ -672,6 +288,7 @@ static bool uniwill_volatile_reg(struct device *dev, unsigned int reg)
 	case EC_ADDR_TRIGGER:
 	case EC_ADDR_SWITCH_STATUS:
 	case EC_ADDR_KBD_STATUS:
+	case EC_ADDR_OEM_4:
 	case EC_ADDR_CHARGE_CTRL:
 	case EC_ADDR_USB_C_POWER_PRIORITY:
 		return true;
@@ -693,11 +310,22 @@ static const struct regmap_config uniwill_ec_config = {
 	.use_single_write = true,
 };
 
+static int uniwill_write_fn_lock(struct uniwill_data *data, bool status)
+{
+	unsigned int value;
+
+	if (status)
+		value = FN_LOCK_STATUS;
+	else
+		value = 0;
+
+	return regmap_update_bits(data->regmap, EC_ADDR_BIOS_OEM, FN_LOCK_STATUS, value);
+}
+
 static ssize_t fn_lock_store(struct device *dev, struct device_attribute *attr, const char *buf,
 			     size_t count)
 {
 	struct uniwill_data *data = dev_get_drvdata(dev);
-	unsigned int value;
 	bool enable;
 	int ret;
 
@@ -705,21 +333,15 @@ static ssize_t fn_lock_store(struct device *dev, struct device_attribute *attr, 
 	if (ret < 0)
 		return ret;
 
-	if (enable)
-		value = FN_LOCK_STATUS;
-	else
-		value = 0;
-
-	ret = regmap_update_bits(data->regmap, EC_ADDR_BIOS_OEM, FN_LOCK_STATUS, value);
+	ret = uniwill_write_fn_lock(data, enable);
 	if (ret < 0)
 		return ret;
 
 	return count;
 }
 
-static ssize_t fn_lock_show(struct device *dev, struct device_attribute *attr, char *buf)
+static int uniwill_read_fn_lock(struct uniwill_data *data, bool *status)
 {
-	struct uniwill_data *data = dev_get_drvdata(dev);
 	unsigned int value;
 	int ret;
 
@@ -727,22 +349,30 @@ static ssize_t fn_lock_show(struct device *dev, struct device_attribute *attr, c
 	if (ret < 0)
 		return ret;
 
-	return sysfs_emit(buf, "%d\n", !!(value & FN_LOCK_STATUS));
+	*status = !!(value & FN_LOCK_STATUS);
+
+	return 0;
+}
+
+static ssize_t fn_lock_show(struct device *dev, struct device_attribute *attr, char *buf)
+{
+	struct uniwill_data *data = dev_get_drvdata(dev);
+	bool status;
+	int ret;
+
+	ret = uniwill_read_fn_lock(data, &status);
+	if (ret < 0)
+		return ret;
+
+	return sysfs_emit(buf, "%d\n", status);
 }
 
 static DEVICE_ATTR_RW(fn_lock);
 
-static ssize_t super_key_enable_store(struct device *dev, struct device_attribute *attr,
-				      const char *buf, size_t count)
+static int uniwill_write_super_key_enable(struct uniwill_data *data, bool status)
 {
-	struct uniwill_data *data = dev_get_drvdata(dev);
 	unsigned int value;
-	bool enable;
 	int ret;
-
-	ret = kstrtobool(buf, &enable);
-	if (ret < 0)
-		return ret;
 
 	guard(mutex)(&data->super_key_lock);
 
@@ -754,37 +384,17 @@ static ssize_t super_key_enable_store(struct device *dev, struct device_attribut
 	 * We can only toggle the super key lock, so we return early if the setting
 	 * is already in the correct state.
 	 */
-	if (enable == !(value & SUPER_KEY_LOCK_STATUS))
-		return count;
+	if (status == !(value & SUPER_KEY_LOCK_STATUS))
+		return 0;
 
-	ret = regmap_write_bits(data->regmap, EC_ADDR_TRIGGER, TRIGGER_SUPER_KEY_LOCK,
-				TRIGGER_SUPER_KEY_LOCK);
-	if (ret < 0)
-		return ret;
-
-	return count;
+	return regmap_write_bits(data->regmap, EC_ADDR_TRIGGER, TRIGGER_SUPER_KEY_LOCK,
+				 TRIGGER_SUPER_KEY_LOCK);
 }
 
-static ssize_t super_key_enable_show(struct device *dev, struct device_attribute *attr, char *buf)
+static ssize_t super_key_enable_store(struct device *dev, struct device_attribute *attr,
+				      const char *buf, size_t count)
 {
 	struct uniwill_data *data = dev_get_drvdata(dev);
-	unsigned int value;
-	int ret;
-
-	ret = regmap_read(data->regmap, EC_ADDR_SWITCH_STATUS, &value);
-	if (ret < 0)
-		return ret;
-
-	return sysfs_emit(buf, "%d\n", !(value & SUPER_KEY_LOCK_STATUS));
-}
-
-static DEVICE_ATTR_RW(super_key_enable);
-
-static ssize_t touchpad_toggle_enable_store(struct device *dev, struct device_attribute *attr,
-					    const char *buf, size_t count)
-{
-	struct uniwill_data *data = dev_get_drvdata(dev);
-	unsigned int value;
 	bool enable;
 	int ret;
 
@@ -792,22 +402,74 @@ static ssize_t touchpad_toggle_enable_store(struct device *dev, struct device_at
 	if (ret < 0)
 		return ret;
 
-	if (enable)
-		value = 0;
-	else
-		value = TOUCHPAD_TOGGLE_OFF;
-
-	ret = regmap_update_bits(data->regmap, EC_ADDR_OEM_4, TOUCHPAD_TOGGLE_OFF, value);
+	ret = uniwill_write_super_key_enable(data, enable);
 	if (ret < 0)
 		return ret;
 
 	return count;
 }
 
-static ssize_t touchpad_toggle_enable_show(struct device *dev, struct device_attribute *attr,
-					   char *buf)
+static int uniwill_read_super_key_enable(struct uniwill_data *data, bool *status)
+{
+	unsigned int value;
+	int ret;
+
+	ret = regmap_read(data->regmap, EC_ADDR_SWITCH_STATUS, &value);
+	if (ret < 0)
+		return ret;
+
+	*status = !(value & SUPER_KEY_LOCK_STATUS);
+
+	return 0;
+}
+
+static ssize_t super_key_enable_show(struct device *dev, struct device_attribute *attr, char *buf)
 {
 	struct uniwill_data *data = dev_get_drvdata(dev);
+	bool status;
+	int ret;
+
+	ret = uniwill_read_super_key_enable(data, &status);
+	if (ret < 0)
+		return ret;
+
+	return sysfs_emit(buf, "%d\n", status);
+}
+
+static DEVICE_ATTR_RW(super_key_enable);
+
+static int uniwill_write_touchpad_toggle_enable(struct uniwill_data *data, bool status)
+{
+	unsigned int value;
+
+	if (status)
+		value = 0;
+	else
+		value = TOUCHPAD_TOGGLE_OFF;
+
+	return regmap_update_bits(data->regmap, EC_ADDR_OEM_4, TOUCHPAD_TOGGLE_OFF, value);
+}
+
+static ssize_t touchpad_toggle_enable_store(struct device *dev, struct device_attribute *attr,
+					    const char *buf, size_t count)
+{
+	struct uniwill_data *data = dev_get_drvdata(dev);
+	bool enable;
+	int ret;
+
+	ret = kstrtobool(buf, &enable);
+	if (ret < 0)
+		return ret;
+
+	ret = uniwill_write_touchpad_toggle_enable(data, enable);
+	if (ret < 0)
+		return ret;
+
+	return count;
+}
+
+static int uniwill_read_touchpad_toggle_enable(struct uniwill_data *data, bool *status)
+{
 	unsigned int value;
 	int ret;
 
@@ -815,7 +477,23 @@ static ssize_t touchpad_toggle_enable_show(struct device *dev, struct device_att
 	if (ret < 0)
 		return ret;
 
-	return sysfs_emit(buf, "%d\n", !(value & TOUCHPAD_TOGGLE_OFF));
+	*status = !(value & TOUCHPAD_TOGGLE_OFF);
+
+	return 0;
+}
+
+static ssize_t touchpad_toggle_enable_show(struct device *dev, struct device_attribute *attr,
+					   char *buf)
+{
+	struct uniwill_data *data = dev_get_drvdata(dev);
+	bool status;
+	int ret;
+
+	ret = uniwill_read_touchpad_toggle_enable(data, &status);
+	if (ret < 0)
+		return ret;
+
+	return sysfs_emit(buf, "%d\n", status);
 }
 
 static DEVICE_ATTR_RW(touchpad_toggle_enable);
@@ -970,12 +648,12 @@ static int uniwill_nvidia_ctgp_init(struct uniwill_data *data)
 	return 0;
 }
 
-static const char * const USB_C_POWER_PRIORITY_TEXT[] = {
+static const char * const usb_c_power_priority_text[] = {
 	[USB_C_POWER_PRIORITY_CHARGING]		= "charging",
 	[USB_C_POWER_PRIORITY_PERFORMANCE]	= "performance",
 };
 
-static const u8 USB_C_POWER_PRIORITY_VALUE[] = {
+static const u8 usb_c_power_priority_value[] = {
 	[USB_C_POWER_PRIORITY_CHARGING]		= 0,
 	[USB_C_POWER_PRIORITY_PERFORMANCE]	= USB_C_POWER_PRIORITY,
 };
@@ -989,11 +667,12 @@ static ssize_t usb_c_power_priority_store(struct device *dev,
 	unsigned int value;
 	int ret;
 
-	option = sysfs_match_string(USB_C_POWER_PRIORITY_TEXT, buf);
-	if (option < 0)
-		return option;
+	ret = sysfs_match_string(usb_c_power_priority_text, buf);
+	if (ret < 0)
+		return ret;
 
-	value = USB_C_POWER_PRIORITY_VALUE[option];
+	option = ret;
+	value = usb_c_power_priority_value[option];
 
 	guard(mutex)(&data->usb_c_power_priority_lock);
 
@@ -1021,11 +700,11 @@ static ssize_t usb_c_power_priority_show(struct device *dev,
 
 	value &= USB_C_POWER_PRIORITY;
 
-	if (USB_C_POWER_PRIORITY_VALUE[USB_C_POWER_PRIORITY_PERFORMANCE] == value)
+	if (usb_c_power_priority_value[USB_C_POWER_PRIORITY_PERFORMANCE] == value)
 		return sysfs_emit(buf, "%s\n",
-				  USB_C_POWER_PRIORITY_TEXT[USB_C_POWER_PRIORITY_PERFORMANCE]);
+				  usb_c_power_priority_text[USB_C_POWER_PRIORITY_PERFORMANCE]);
 
-	return sysfs_emit(buf, "%s\n", USB_C_POWER_PRIORITY_TEXT[USB_C_POWER_PRIORITY_CHARGING]);
+	return sysfs_emit(buf, "%s\n", usb_c_power_priority_text[USB_C_POWER_PRIORITY_CHARGING]);
 }
 
 static DEVICE_ATTR_RW(usb_c_power_priority);
@@ -1034,7 +713,7 @@ static int usb_c_power_priority_restore(struct uniwill_data *data)
 {
 	unsigned int value;
 
-	value = USB_C_POWER_PRIORITY_VALUE[data->last_usb_c_power_priority_option];
+	value = usb_c_power_priority_value[data->last_usb_c_power_priority_option];
 
 	guard(mutex)(&data->usb_c_power_priority_lock);
 
@@ -1061,7 +740,7 @@ static int usb_c_power_priority_init(struct uniwill_data *data)
 	value &= USB_C_POWER_PRIORITY;
 
 	data->last_usb_c_power_priority_option =
-		USB_C_POWER_PRIORITY_VALUE[USB_C_POWER_PRIORITY_PERFORMANCE] == value ?
+		usb_c_power_priority_value[USB_C_POWER_PRIORITY_PERFORMANCE] == value ?
 			USB_C_POWER_PRIORITY_PERFORMANCE :
 			USB_C_POWER_PRIORITY_CHARGING;
 
@@ -1107,11 +786,26 @@ static ssize_t ac_auto_boot_show(struct device *dev, struct device_attribute *at
 
 static DEVICE_ATTR_RW(ac_auto_boot);
 
+static int uniwill_write_usb_powershare_high(struct uniwill_data *data, bool status)
+{
+	unsigned int value;
+
+	if (status)
+		value = TRIGGER_USB_CHARGING;
+	else
+		value = 0;
+
+	/*
+	 * Normaly this RMW-sequence could also trigger the super key toggle,
+	 * but the EC seems to take care that those bits are always read as 0.
+	 */
+	return regmap_update_bits(data->regmap, EC_ADDR_TRIGGER, TRIGGER_USB_CHARGING, value);
+}
+
 static ssize_t usb_powershare_high_store(struct device *dev, struct device_attribute *attr,
 					 const char *buf, size_t count)
 {
 	struct uniwill_data *data = dev_get_drvdata(dev);
-	unsigned int regval;
 	bool enable;
 	int ret;
 
@@ -1119,34 +813,39 @@ static ssize_t usb_powershare_high_store(struct device *dev, struct device_attri
 	if (ret < 0)
 		return ret;
 
-	if (enable)
-		regval = TRIGGER_USB_CHARGING;
-	else
-		regval = 0;
-
-	/*
-	 * Normaly this RMW-sequence could also trigger the super key toggle,
-	 * but the EC seems to take care that those bits are always read as 0.
-	 */
-	ret = regmap_update_bits(data->regmap, EC_ADDR_TRIGGER, TRIGGER_USB_CHARGING, regval);
+	ret = uniwill_write_usb_powershare_high(data, enable);
 	if (ret < 0)
 		return ret;
 
 	return count;
 }
 
+static int uniwill_read_usb_powershare_high(struct uniwill_data *data, bool *status)
+{
+	unsigned int value;
+	int ret;
+
+	ret = regmap_read(data->regmap, EC_ADDR_TRIGGER, &value);
+	if (ret < 0)
+		return ret;
+
+	*status = !!(value & TRIGGER_USB_CHARGING);
+
+	return 0;
+}
+
 static ssize_t usb_powershare_high_show(struct device *dev, struct device_attribute *attr,
 					char *buf)
 {
 	struct uniwill_data *data = dev_get_drvdata(dev);
-	unsigned int regval;
+	bool status;
 	int ret;
 
-	ret = regmap_read(data->regmap, EC_ADDR_TRIGGER, &regval);
+	ret = uniwill_read_usb_powershare_high(data, &status);
 	if (ret < 0)
 		return ret;
 
-	return sysfs_emit(buf, "%d\n", !!(regval & TRIGGER_USB_CHARGING));
+	return sysfs_emit(buf, "%d\n", status);
 }
 
 static DEVICE_ATTR_RW(usb_powershare_high);
@@ -1221,7 +920,7 @@ static const struct attribute_group uniwill_group = {
 	.attrs = uniwill_attrs,
 };
 
-static const struct attribute_group *uniwill_groups[] = {
+const struct attribute_group *uniwill_groups[] = {
 	&uniwill_group,
 	NULL
 };
@@ -1418,7 +1117,8 @@ static int uniwill_led_brightness_set(struct led_classdev *led_cdev, enum led_br
 
 	for (int i = 0; i < LED_CHANNELS; i++) {
 		/* Prevent the brightness values from overflowing */
-		value = min(data->lightbar_max_brightness, data->led_mc_subled_info[i].brightness);
+		value = min(data->config.lightbar_max_brightness,
+			    data->led_mc_subled_info[i].brightness);
 		ret = regmap_write(data->regmap, uniwill_led_channel_to_ac_reg[i], value);
 		if (ret < 0)
 			return ret;
@@ -1445,7 +1145,7 @@ static int uniwill_led_brightness_set(struct led_classdev *led_cdev, enum led_br
 static int uniwill_led_init(struct uniwill_data *data)
 {
 	struct led_init_data init_data = {
-		.devicename = DRIVER_NAME,
+		.devicename = UNIWILL_EC_DRIVER_NAME,
 		.default_label = "multicolor:" LED_FUNCTION_STATUS,
 		.devname_mandatory = true,
 	};
@@ -1487,14 +1187,14 @@ static int uniwill_led_init(struct uniwill_data *data)
 		return ret;
 
 	data->led_mc_cdev.led_cdev.color = LED_COLOR_ID_MULTI;
-	data->led_mc_cdev.led_cdev.max_brightness = data->lightbar_max_brightness;
+	data->led_mc_cdev.led_cdev.max_brightness = data->config.lightbar_max_brightness;
 	data->led_mc_cdev.led_cdev.flags = LED_REJECT_NAME_CONFLICT;
 	data->led_mc_cdev.led_cdev.brightness_set_blocking = uniwill_led_brightness_set;
 
 	if (value & LIGHTBAR_S0_OFF)
 		data->led_mc_cdev.led_cdev.brightness = 0;
 	else
-		data->led_mc_cdev.led_cdev.brightness = data->lightbar_max_brightness;
+		data->led_mc_cdev.led_cdev.brightness = data->config.lightbar_max_brightness;
 
 	for (int i = 0; i < LED_CHANNELS; i++) {
 		data->led_mc_subled_info[i].color_index = color_indices[i];
@@ -1507,7 +1207,7 @@ static int uniwill_led_init(struct uniwill_data *data)
 		 * Make sure that the initial intensity value is not greater than
 		 * the maximum brightness.
 		 */
-		value = min(data->lightbar_max_brightness, value);
+		value = min(data->config.lightbar_max_brightness, value);
 		ret = regmap_write(data->regmap, uniwill_led_channel_to_ac_reg[i], value);
 		if (ret < 0)
 			return ret;
@@ -1569,7 +1269,7 @@ static int uniwill_kbd_led_read_brightness(struct uniwill_data *data)
 	if (ret < 0)
 		return ret;
 
-	return min(FIELD_GET(KBD_BRIGHTNESS_MASK, regval), data->kbd_led_max_brightness);
+	return min(FIELD_GET(KBD_BRIGHTNESS_MASK, regval), data->config.kbd_led_max_brightness);
 }
 
 static int uniwill_kbd_led_brightness_set(struct led_classdev *led_cdev,
@@ -1615,9 +1315,7 @@ static int uniwill_kbd_led_mc_brightness_set(struct led_classdev *led_cdev,
 		min_intensity = 1;
 
 	for (int i = 0; i < KBD_LED_CHANNELS; i++) {
-		/* Prevent the intensity values from overflowing */
-		regval = clamp_val(data->kbd_led_mc_subled_info[i].intensity, min_intensity,
-				   KBD_LED_MAX_INTENSITY);
+		regval = max(data->kbd_led_mc_subled_info[i].intensity, min_intensity);
 		ret = regmap_write(data->regmap, uniwill_kbd_led_channel_to_reg[i], regval);
 		if (ret < 0)
 			return ret;
@@ -1646,9 +1344,10 @@ static int uniwill_kbd_led_init(struct uniwill_data *data)
 		LED_COLOR_ID_BLUE,
 	};
 	struct led_init_data init_data = {
-		.devicename = DRIVER_NAME,
+		.devicename = UNIWILL_EC_DRIVER_NAME,
 		.devname_mandatory = true,
 	};
+	bool intensity_all_zeros = true;
 	bool needs_trigger = false;
 	unsigned int regval;
 	int ret;
@@ -1695,7 +1394,7 @@ static int uniwill_kbd_led_init(struct uniwill_data *data)
 
 	if (data->single_color_kbd) {
 		init_data.default_label = "white:" LED_FUNCTION_KBD_BACKLIGHT;
-		data->kbd_led_cdev.max_brightness = data->kbd_led_max_brightness;
+		data->kbd_led_cdev.max_brightness = data->config.kbd_led_max_brightness;
 		data->kbd_led_cdev.color = LED_COLOR_ID_WHITE;
 		data->kbd_led_cdev.flags = LED_BRIGHT_HW_CHANGED | LED_REJECT_NAME_CONFLICT;
 		data->kbd_led_cdev.brightness_set_blocking = uniwill_kbd_led_brightness_set;
@@ -1724,8 +1423,23 @@ static int uniwill_kbd_led_init(struct uniwill_data *data)
 			needs_trigger = true;
 		}
 
+		if (regval)
+			intensity_all_zeros = false;
+
 		data->kbd_led_mc_subled_info[i].intensity = regval;
 		data->kbd_led_mc_subled_info[i].channel = i;
+	}
+
+	/* See uniwill_kbd_led_mc_brightness_set() for an explaination. */
+	if (intensity_all_zeros) {
+		for (int i = 0; i < KBD_LED_CHANNELS; i++) {
+			data->kbd_led_mc_subled_info[i].intensity = 1;
+			ret = regmap_write(data->regmap, uniwill_kbd_led_channel_to_reg[i], 1);
+			if (ret < 0)
+				return ret;
+		}
+
+		needs_trigger = true;
 	}
 
 	if (needs_trigger) {
@@ -1740,7 +1454,7 @@ static int uniwill_kbd_led_init(struct uniwill_data *data)
 		return ret;
 
 	init_data.default_label = "multicolor:" LED_FUNCTION_KBD_BACKLIGHT;
-	data->kbd_led_mc_cdev.led_cdev.max_brightness = data->kbd_led_max_brightness;
+	data->kbd_led_mc_cdev.led_cdev.max_brightness = data->config.kbd_led_max_brightness;
 	data->kbd_led_mc_cdev.led_cdev.color = LED_COLOR_ID_MULTI;
 	data->kbd_led_mc_cdev.led_cdev.flags = LED_BRIGHT_HW_CHANGED | LED_REJECT_NAME_CONFLICT;
 	data->kbd_led_mc_cdev.led_cdev.brightness_set_blocking = uniwill_kbd_led_mc_brightness_set;
@@ -1750,6 +1464,40 @@ static int uniwill_kbd_led_init(struct uniwill_data *data)
 
 	return devm_led_classdev_multicolor_register_ext(data->dev, &data->kbd_led_mc_cdev,
 							 &init_data);
+}
+
+static unsigned int uniwill_sanitize_battery_threshold(unsigned int value)
+{
+	/* 0 means "charging threshold not active" */
+	if (!value)
+		return 100;
+
+	/* Guard against invalid values */
+	return min(value, 100);
+}
+
+static int uniwill_read_charge_type(struct uniwill_data *data, enum power_supply_charge_type *type)
+{
+	unsigned int value;
+	int ret;
+
+	ret = regmap_read(data->regmap, EC_ADDR_OEM_4, &value);
+	if (ret < 0)
+		return ret;
+
+	switch (FIELD_GET(CHARGING_PROFILE_MASK, value)) {
+	case CHARGING_PROFILE_HIGH_CAPACITY:
+		*type = POWER_SUPPLY_CHARGE_TYPE_STANDARD;
+		return 0;
+	case CHARGING_PROFILE_BALANCED:
+		*type = POWER_SUPPLY_CHARGE_TYPE_LONGLIFE;
+		return 0;
+	case CHARGING_PROFILE_STATIONARY:
+		*type = POWER_SUPPLY_CHARGE_TYPE_TRICKLE;
+		return 0;
+	default:
+		return -EPROTO;
+	}
 }
 
 static int uniwill_get_property(struct power_supply *psy, const struct power_supply_ext *ext,
@@ -1763,23 +1511,15 @@ static int uniwill_get_property(struct power_supply *psy, const struct power_sup
 
 	switch (psp) {
 	case POWER_SUPPLY_PROP_CHARGE_TYPES:
-		ret = regmap_read(data->regmap, EC_ADDR_OEM_4, &regval);
-		if (ret < 0)
-			return ret;
-
-		switch (FIELD_GET(CHARGING_PROFILE_MASK, regval)) {
-		case CHARGING_PROFILE_HIGH_CAPACITY:
-			val->intval = POWER_SUPPLY_CHARGE_TYPE_STANDARD;
-			return 0;
-		case CHARGING_PROFILE_BALANCED:
-			val->intval = POWER_SUPPLY_CHARGE_TYPE_LONGLIFE;
-			return 0;
-		case CHARGING_PROFILE_STATIONARY:
-			val->intval = POWER_SUPPLY_CHARGE_TYPE_TRICKLE;
-			return 0;
-		default:
-			return -EPROTO;
-		}
+		/*
+		 * We need to use the cached value here because the charging mode
+		 * reported by the EC might temporarily change when a external power
+		 * source has been connected.
+		 */
+		mutex_lock(&data->charge_type_lock);
+		val->intval = data->last_charge_type;
+		mutex_unlock(&data->charge_type_lock);
+		return 0;
 	case POWER_SUPPLY_PROP_HEALTH:
 		ret = power_supply_get_property_direct(psy, POWER_SUPPLY_PROP_PRESENT, &prop);
 		if (ret < 0)
@@ -1817,15 +1557,39 @@ static int uniwill_get_property(struct power_supply *psy, const struct power_sup
 			return ret;
 
 		regval = FIELD_GET(CHARGE_CTRL_MASK, regval);
-		if (!regval)
-			val->intval = 100;
-		else
-			val->intval = min(regval, 100);
-
+		val->intval = uniwill_sanitize_battery_threshold(regval);
 		return 0;
 	default:
 		return -EINVAL;
 	}
+}
+
+static int uniwill_write_charge_type(struct uniwill_data *data, enum power_supply_charge_type type)
+{
+	unsigned int value;
+
+	switch (type) {
+	case POWER_SUPPLY_CHARGE_TYPE_TRICKLE:
+		value = FIELD_PREP(CHARGING_PROFILE_MASK, CHARGING_PROFILE_STATIONARY);
+		break;
+	case POWER_SUPPLY_CHARGE_TYPE_STANDARD:
+		value = FIELD_PREP(CHARGING_PROFILE_MASK, CHARGING_PROFILE_HIGH_CAPACITY);
+		break;
+	case POWER_SUPPLY_CHARGE_TYPE_LONGLIFE:
+		value = FIELD_PREP(CHARGING_PROFILE_MASK, CHARGING_PROFILE_BALANCED);
+		break;
+	default:
+		return -EINVAL;
+	}
+
+	return regmap_update_bits(data->regmap, EC_ADDR_OEM_4, CHARGING_PROFILE_MASK, value);
+}
+
+static int uniwill_restore_charge_type(struct uniwill_data *data)
+{
+	guard(mutex)(&data->charge_type_lock);
+
+	return uniwill_write_charge_type(data, data->last_charge_type);
 }
 
 static int uniwill_set_property(struct power_supply *psy, const struct power_supply_ext *ext,
@@ -1833,26 +1597,19 @@ static int uniwill_set_property(struct power_supply *psy, const struct power_sup
 				const union power_supply_propval *val)
 {
 	struct uniwill_data *data = drvdata;
-	unsigned int regval;
+	int ret;
 
 	switch (psp) {
 	case POWER_SUPPLY_PROP_CHARGE_TYPES:
-		switch (val->intval) {
-		case POWER_SUPPLY_CHARGE_TYPE_TRICKLE:
-			regval = FIELD_PREP(CHARGING_PROFILE_MASK, CHARGING_PROFILE_STATIONARY);
-			break;
-		case POWER_SUPPLY_CHARGE_TYPE_STANDARD:
-			regval = FIELD_PREP(CHARGING_PROFILE_MASK, CHARGING_PROFILE_HIGH_CAPACITY);
-			break;
-		case POWER_SUPPLY_CHARGE_TYPE_LONGLIFE:
-			regval = FIELD_PREP(CHARGING_PROFILE_MASK, CHARGING_PROFILE_BALANCED);
-			break;
-		default:
-			return -EINVAL;
-		}
+		mutex_lock(&data->charge_type_lock);
 
-		return regmap_update_bits(data->regmap, EC_ADDR_OEM_4, CHARGING_PROFILE_MASK,
-					  regval);
+		ret = uniwill_write_charge_type(data, val->intval);
+		if (ret >= 0)
+			data->last_charge_type = val->intval;
+
+		mutex_unlock(&data->charge_type_lock);
+
+		return ret;
 	case POWER_SUPPLY_PROP_CHARGE_CONTROL_END_THRESHOLD:
 		if (val->intval < 0 || val->intval > 100)
 			return -EINVAL;
@@ -1883,7 +1640,7 @@ static const enum power_supply_property uniwill_charge_limit_properties[] = {
 };
 
 static const struct power_supply_ext uniwill_charge_limit_extension = {
-	.name = DRIVER_NAME,
+	.name = UNIWILL_EC_DRIVER_NAME,
 	.properties = uniwill_charge_limit_properties,
 	.num_properties = ARRAY_SIZE(uniwill_charge_limit_properties),
 	.get_property = uniwill_get_property,
@@ -1897,7 +1654,7 @@ static const enum power_supply_property uniwill_charge_modes_properties[] = {
 };
 
 static const struct power_supply_ext uniwill_charge_modes_extension = {
-	.name = DRIVER_NAME,
+	.name = UNIWILL_EC_DRIVER_NAME,
 	.charge_types = BIT(POWER_SUPPLY_CHARGE_TYPE_TRICKLE) |
 			BIT(POWER_SUPPLY_CHARGE_TYPE_STANDARD) |
 			BIT(POWER_SUPPLY_CHARGE_TYPE_LONGLIFE),
@@ -1914,7 +1671,7 @@ static int uniwill_add_battery(struct power_supply *battery, struct acpi_battery
 	struct uniwill_battery_entry *entry;
 	int ret;
 
-	entry = kzalloc(sizeof(*entry), GFP_KERNEL);
+	entry = kzalloc_obj(*entry);
 	if (!entry)
 		return -ENOMEM;
 
@@ -1963,7 +1720,7 @@ static int uniwill_remove_battery(struct power_supply *battery, struct acpi_batt
 
 static int uniwill_battery_init(struct uniwill_data *data)
 {
-	unsigned int value, threshold;
+	unsigned int value, threshold, sanitized;
 	int ret;
 
 	if (uniwill_device_supports(data, UNIWILL_FEATURE_BATTERY_CHARGE_LIMIT)) {
@@ -1974,21 +1731,29 @@ static int uniwill_battery_init(struct uniwill_data *data)
 		/*
 		 * The charge control threshold might be initialized with 0 by
 		 * the EC to signal that said threshold is uninitialized. We thus
-		 * need to replace this value with 100 to signal that we want to
-		 * take control of battery charging. For the sake of completeness
-		 * we also set the charging threshold to 100 if the EC-provided
-		 * value is invalid.
+		 * need to replace this placeholder value with a valid one (100)
+		 * to signal that we want to take control of battery charging.
+		 * For the sake of completeness we also apply this to other
+		 * invalid threshold values.
 		 */
 		threshold = FIELD_GET(CHARGE_CTRL_MASK, value);
-		if (threshold == 0 || threshold > 100) {
-			FIELD_MODIFY(CHARGE_CTRL_MASK, &value, 100);
+		sanitized = uniwill_sanitize_battery_threshold(threshold);
+		if (threshold != sanitized) {
+			FIELD_MODIFY(CHARGE_CTRL_MASK, &value, sanitized);
 			ret = regmap_write(data->regmap, EC_ADDR_CHARGE_CTRL, value);
 			if (ret < 0)
 				return ret;
 		}
+	} else if (uniwill_device_supports(data, UNIWILL_FEATURE_BATTERY_CHARGE_MODES)) {
+		ret = devm_mutex_init(data->dev, &data->charge_type_lock);
+		if (ret < 0)
+			return ret;
+
+		ret = uniwill_read_charge_type(data, &data->last_charge_type);
+		if (ret < 0)
+			return ret;
 	} else {
-		if (!uniwill_device_supports(data, UNIWILL_FEATURE_BATTERY_CHARGE_MODES))
-			return 0;
+		return 0;
 	}
 
 	ret = devm_mutex_init(data->dev, &data->battery_lock);
@@ -2007,11 +1772,13 @@ static int uniwill_notifier_call(struct notifier_block *nb, unsigned long action
 {
 	struct uniwill_data *data = container_of(nb, struct uniwill_data, nb);
 	struct uniwill_battery_entry *entry;
+	int ret;
 
 	switch (action) {
 	case UNIWILL_OSD_BATTERY_ALERT:
-		if (!uniwill_device_supports(data, UNIWILL_FEATURE_BATTERY_CHARGE_LIMIT) &&
-		    !uniwill_device_supports(data, UNIWILL_FEATURE_BATTERY_CHARGE_MODES))
+		if (!uniwill_device_supports_any(data,
+						 UNIWILL_FEATURE_BATTERY_CHARGE_LIMIT |
+						 UNIWILL_FEATURE_BATTERY_CHARGE_MODES))
 			return NOTIFY_DONE;
 
 		mutex_lock(&data->battery_lock);
@@ -2022,10 +1789,24 @@ static int uniwill_notifier_call(struct notifier_block *nb, unsigned long action
 
 		return NOTIFY_OK;
 	case UNIWILL_OSD_DC_ADAPTER_CHANGED:
-		if (!uniwill_device_supports(data, UNIWILL_FEATURE_USB_C_POWER_PRIORITY))
+		if (!uniwill_device_supports_any(data,
+						 UNIWILL_FEATURE_BATTERY_CHARGE_MODES |
+						 UNIWILL_FEATURE_USB_C_POWER_PRIORITY))
 			return NOTIFY_DONE;
 
-		return notifier_from_errno(usb_c_power_priority_restore(data));
+		if (uniwill_device_supports(data, UNIWILL_FEATURE_BATTERY_CHARGE_MODES)) {
+			ret = uniwill_restore_charge_type(data);
+			if (ret < 0)
+				return notifier_from_errno(ret);
+		}
+
+		if (uniwill_device_supports(data, UNIWILL_FEATURE_USB_C_POWER_PRIORITY)) {
+			ret = usb_c_power_priority_restore(data);
+			if (ret < 0)
+				return notifier_from_errno(ret);
+		}
+
+		return NOTIFY_OK;
 	case UNIWILL_OSD_FN_LOCK:
 		if (!uniwill_device_supports(data, UNIWILL_FEATURE_FN_LOCK))
 			return NOTIFY_DONE;
@@ -2121,36 +1902,26 @@ static int uniwill_ec_init(struct uniwill_data *data)
 	return devm_add_action_or_reset(data->dev, uniwill_disable_manual_control, data);
 }
 
-static int uniwill_probe(struct platform_device *pdev)
+int uniwill_probe(struct device *dev, const struct regmap_bus *bus, void *bus_context)
 {
 	struct uniwill_data *data;
 	struct regmap *regmap;
-	acpi_handle handle;
 	int ret;
 
-	handle = ACPI_HANDLE(&pdev->dev);
-	if (!handle)
-		return -ENODEV;
-
-	data = devm_kzalloc(&pdev->dev, sizeof(*data), GFP_KERNEL);
+	data = devm_kzalloc(dev, sizeof(*data), GFP_KERNEL);
 	if (!data)
 		return -ENOMEM;
 
-	data->dev = &pdev->dev;
-	data->handle = handle;
-	platform_set_drvdata(pdev, data);
+	data->dev = dev;
+	dev_set_drvdata(dev, data);
 
-	regmap = devm_regmap_init(&pdev->dev, &uniwill_ec_bus, data, &uniwill_ec_config);
+	regmap = devm_regmap_init(dev, bus, bus_context, &uniwill_ec_config);
 	if (IS_ERR(regmap))
 		return PTR_ERR(regmap);
 
 	data->regmap = regmap;
 
-	ret = devm_mutex_init(&pdev->dev, &data->super_key_lock);
-	if (ret < 0)
-		return ret;
-
-	ret = usb_c_power_priority_init(data);
+	ret = devm_mutex_init(dev, &data->super_key_lock);
 	if (ret < 0)
 		return ret;
 
@@ -2158,9 +1929,7 @@ static int uniwill_probe(struct platform_device *pdev)
 	if (ret < 0)
 		return ret;
 
-	data->features = device_descriptor.features;
-	data->kbd_led_max_brightness = device_descriptor.kbd_led_max_brightness;
-	data->lightbar_max_brightness = device_descriptor.lightbar_max_brightness;
+	data->config = device_descriptor.config;
 
 	/*
 	 * Some devices might need to perform some device-specific initialization steps
@@ -2168,7 +1937,7 @@ static int uniwill_probe(struct platform_device *pdev)
 	 * this callback just after the EC itself was initialized.
 	 */
 	if (device_descriptor.probe) {
-		ret = device_descriptor.probe(data);
+		ret = device_descriptor.probe(data->regmap, data->project_id, &data->config);
 		if (ret < 0)
 			return ret;
 	}
@@ -2193,12 +1962,16 @@ static int uniwill_probe(struct platform_device *pdev)
 	if (ret < 0)
 		return ret;
 
+	ret = usb_c_power_priority_init(data);
+	if (ret < 0)
+		return ret;
+
 	return uniwill_input_init(data);
 }
 
-static void uniwill_shutdown(struct platform_device *pdev)
+void uniwill_shutdown(struct device *dev)
 {
-	struct uniwill_data *data = platform_get_drvdata(pdev);
+	struct uniwill_data *data = dev_get_drvdata(dev);
 
 	regmap_clear_bits(data->regmap, EC_ADDR_AP_OEM, ENABLE_MANUAL_CTRL);
 }
@@ -2209,10 +1982,10 @@ static int uniwill_suspend_fn_lock(struct uniwill_data *data)
 		return 0;
 
 	/*
-	 * The EC_ADDR_BIOS_OEM is marked as volatile, so we have to restore it
+	 * EC_ADDR_BIOS_OEM is marked as volatile, so we have to restore it
 	 * ourselves.
 	 */
-	return regmap_read(data->regmap, EC_ADDR_BIOS_OEM, &data->last_status);
+	return uniwill_read_fn_lock(data, &data->last_fn_lock_state);
 }
 
 static int uniwill_suspend_super_key(struct uniwill_data *data)
@@ -2221,10 +1994,22 @@ static int uniwill_suspend_super_key(struct uniwill_data *data)
 		return 0;
 
 	/*
-	 * The EC_ADDR_SWITCH_STATUS is marked as volatile, so we have to restore it
+	 * EC_ADDR_SWITCH_STATUS is marked as volatile, so we have to restore it
 	 * ourselves.
 	 */
-	return regmap_read(data->regmap, EC_ADDR_SWITCH_STATUS, &data->last_switch_status);
+	return uniwill_read_super_key_enable(data, &data->last_super_key_enable_state);
+}
+
+static int uniwill_suspend_touchpad_toggle(struct uniwill_data *data)
+{
+	if (!uniwill_device_supports(data, UNIWILL_FEATURE_TOUCHPAD_TOGGLE))
+		return 0;
+
+	/*
+	 * EC_ADDR_OEM_4 is marked as volatile, so we have to restore it
+	 * ourselves.
+	 */
+	return uniwill_read_touchpad_toggle_enable(data, &data->last_touchpad_toggle_enable_state);
 }
 
 static int uniwill_suspend_battery(struct uniwill_data *data)
@@ -2271,11 +2056,10 @@ static int uniwill_suspend_usb_powershare(struct uniwill_data *data)
 		return 0;
 
 	/*
-	 * Save the current usb powershare setting in order to restore it during
-	 * resume. We cannot use the regmap code for that since this register needs
-	 * to be declared as volatile.
+	 * EC_ADDR_TRIGGER is marked as volatile, so we have to restore it
+	 * ourselves.
 	 */
-	return regmap_read(data->regmap, EC_ADDR_TRIGGER, &data->last_trigger);
+	return uniwill_read_usb_powershare_high(data, &data->last_usb_powershare_high_state);
 }
 
 static int uniwill_suspend_nvidia_ctgp(struct uniwill_data *data)
@@ -2287,7 +2071,7 @@ static int uniwill_suspend_nvidia_ctgp(struct uniwill_data *data)
 				 CTGP_DB_DB_ENABLE | CTGP_DB_CTGP_ENABLE);
 }
 
-static int uniwill_suspend(struct device *dev)
+int uniwill_suspend(struct device *dev)
 {
 	struct uniwill_data *data = dev_get_drvdata(dev);
 	int ret;
@@ -2297,6 +2081,10 @@ static int uniwill_suspend(struct device *dev)
 		return ret;
 
 	ret = uniwill_suspend_super_key(data);
+	if (ret < 0)
+		return ret;
+
+	ret = uniwill_suspend_touchpad_toggle(data);
 	if (ret < 0)
 		return ret;
 
@@ -2327,36 +2115,35 @@ static int uniwill_resume_fn_lock(struct uniwill_data *data)
 	if (!uniwill_device_supports(data, UNIWILL_FEATURE_FN_LOCK))
 		return 0;
 
-	return regmap_update_bits(data->regmap, EC_ADDR_BIOS_OEM, FN_LOCK_STATUS,
-				  data->last_status);
+	return uniwill_write_fn_lock(data, data->last_fn_lock_state);
 }
 
 static int uniwill_resume_super_key(struct uniwill_data *data)
 {
-	unsigned int value;
-	int ret;
-
 	if (!uniwill_device_supports(data, UNIWILL_FEATURE_SUPER_KEY))
 		return 0;
 
-	ret = regmap_read(data->regmap, EC_ADDR_SWITCH_STATUS, &value);
-	if (ret < 0)
-		return ret;
+	return uniwill_write_super_key_enable(data, data->last_super_key_enable_state);
+}
 
-	if ((data->last_switch_status & SUPER_KEY_LOCK_STATUS) == (value & SUPER_KEY_LOCK_STATUS))
+static int uniwill_resume_touchpad_toggle(struct uniwill_data *data)
+{
+	if (!uniwill_device_supports(data, UNIWILL_FEATURE_TOUCHPAD_TOGGLE))
 		return 0;
 
-	return regmap_write_bits(data->regmap, EC_ADDR_TRIGGER, TRIGGER_SUPER_KEY_LOCK,
-				 TRIGGER_SUPER_KEY_LOCK);
+	return uniwill_write_touchpad_toggle_enable(data, data->last_touchpad_toggle_enable_state);
 }
 
 static int uniwill_resume_battery(struct uniwill_data *data)
 {
-	if (!uniwill_device_supports(data, UNIWILL_FEATURE_BATTERY_CHARGE_LIMIT))
-		return 0;
+	if (uniwill_device_supports(data, UNIWILL_FEATURE_BATTERY_CHARGE_MODES))
+		return uniwill_restore_charge_type(data);
 
-	return regmap_update_bits(data->regmap, EC_ADDR_CHARGE_CTRL, CHARGE_CTRL_MASK,
-				  data->last_charge_ctrl);
+	if (uniwill_device_supports(data, UNIWILL_FEATURE_BATTERY_CHARGE_LIMIT))
+		return regmap_update_bits(data->regmap, EC_ADDR_CHARGE_CTRL, CHARGE_CTRL_MASK,
+					  data->last_charge_ctrl);
+
+	return 0;
 }
 
 static int uniwill_resume_kbd_led(struct uniwill_data *data)
@@ -2381,8 +2168,7 @@ static int uniwill_resume_usb_powershare(struct uniwill_data *data)
 	if (!uniwill_device_supports(data, UNIWILL_FEATURE_USB_POWERSHARE))
 		return 0;
 
-	return regmap_update_bits(data->regmap, EC_ADDR_TRIGGER, TRIGGER_USB_CHARGING,
-				  data->last_trigger);
+	return uniwill_write_usb_powershare_high(data, data->last_usb_powershare_high_state);
 }
 
 static int uniwill_resume_nvidia_ctgp(struct uniwill_data *data)
@@ -2402,7 +2188,7 @@ static int uniwill_resume_usb_c_power_priority(struct uniwill_data *data)
 	return usb_c_power_priority_restore(data);
 }
 
-static int uniwill_resume(struct device *dev)
+int uniwill_resume(struct device *dev)
 {
 	struct uniwill_data *data = dev_get_drvdata(dev);
 	int ret;
@@ -2418,6 +2204,10 @@ static int uniwill_resume(struct device *dev)
 		return ret;
 
 	ret = uniwill_resume_super_key(data);
+	if (ret < 0)
+		return ret;
+
+	ret = uniwill_resume_touchpad_toggle(data);
 	if (ret < 0)
 		return ret;
 
@@ -2440,705 +2230,32 @@ static int uniwill_resume(struct device *dev)
 	return uniwill_resume_usb_c_power_priority(data);
 }
 
-static DEFINE_SIMPLE_DEV_PM_OPS(uniwill_pm_ops, uniwill_suspend, uniwill_resume);
-
-/*
- * We only use the DMI table for auoloading because the ACPI device itself
- * does not guarantee that the underlying EC implementation is supported.
- */
-static const struct acpi_device_id uniwill_id_table[] = {
-	{ "INOU0000" },
-	{ },
-};
-
-static struct platform_driver uniwill_driver = {
-	.driver = {
-		.name = DRIVER_NAME,
-		.dev_groups = uniwill_groups,
-		.probe_type = PROBE_PREFER_ASYNCHRONOUS,
-		.acpi_match_table = uniwill_id_table,
-		.pm = pm_sleep_ptr(&uniwill_pm_ops),
-	},
-	.probe = uniwill_probe,
-	.shutdown = uniwill_shutdown,
-};
-
-static struct uniwill_device_descriptor machenike_l16p_descriptor __initdata = {
-	.features = UNIWILL_FEATURE_FN_LOCK |
-		    UNIWILL_FEATURE_SUPER_KEY |
-		    UNIWILL_FEATURE_CPU_TEMP |
-		    UNIWILL_FEATURE_GPU_TEMP |
-		    UNIWILL_FEATURE_PRIMARY_FAN |
-		    UNIWILL_FEATURE_SECONDARY_FAN |
-		    UNIWILL_FEATURE_NVIDIA_CTGP_CONTROL |
-		    UNIWILL_FEATURE_KEYBOARD_BACKLIGHT |
-		    UNIWILL_FEATURE_AC_AUTO_BOOT |
-		    UNIWILL_FEATURE_USB_POWERSHARE,
-	.kbd_led_max_brightness = 4,
-};
-
-static struct uniwill_device_descriptor lapqc71a_lapqc71b_descriptor __initdata = {
-	.features = UNIWILL_FEATURE_SUPER_KEY |
-		    UNIWILL_FEATURE_LIGHTBAR |
-		    UNIWILL_FEATURE_BATTERY_CHARGE_LIMIT |
-		    UNIWILL_FEATURE_CPU_TEMP |
-		    UNIWILL_FEATURE_GPU_TEMP |
-		    UNIWILL_FEATURE_PRIMARY_FAN |
-		    UNIWILL_FEATURE_SECONDARY_FAN,
-	.lightbar_max_brightness = 36,
-};
-
-static struct uniwill_device_descriptor lapac71h_descriptor __initdata = {
-	.features = UNIWILL_FEATURE_FN_LOCK |
-		    UNIWILL_FEATURE_SUPER_KEY |
-		    UNIWILL_FEATURE_TOUCHPAD_TOGGLE |
-		    UNIWILL_FEATURE_BATTERY_CHARGE_LIMIT |
-		    UNIWILL_FEATURE_CPU_TEMP |
-		    UNIWILL_FEATURE_GPU_TEMP |
-		    UNIWILL_FEATURE_PRIMARY_FAN |
-		    UNIWILL_FEATURE_SECONDARY_FAN,
-};
-
-static struct uniwill_device_descriptor lapkc71f_descriptor __initdata = {
-	.features = UNIWILL_FEATURE_FN_LOCK |
-		    UNIWILL_FEATURE_SUPER_KEY |
-		    UNIWILL_FEATURE_TOUCHPAD_TOGGLE |
-		    UNIWILL_FEATURE_LIGHTBAR |
-		    UNIWILL_FEATURE_BATTERY_CHARGE_LIMIT |
-		    UNIWILL_FEATURE_CPU_TEMP |
-		    UNIWILL_FEATURE_GPU_TEMP |
-		    UNIWILL_FEATURE_PRIMARY_FAN |
-		    UNIWILL_FEATURE_SECONDARY_FAN,
-	.lightbar_max_brightness = 200,
-};
-
-/*
- * The featuresets below reflect somewhat chronological changes:
- * 1 -> 2: UNIWILL_FEATURE_NVIDIA_CTGP_CONTROL is added to the EC firmware.
- * 2 -> 3: UNIWILL_FEATURE_USB_C_POWER_PRIORITY is removed from the EC firmware.
- * Some devices might divert from this timeline.
- */
-
-static struct uniwill_device_descriptor tux_featureset_1_descriptor __initdata = {
-	.features = UNIWILL_FEATURE_FN_LOCK |
-		    UNIWILL_FEATURE_SUPER_KEY |
-		    UNIWILL_FEATURE_CPU_TEMP |
-		    UNIWILL_FEATURE_PRIMARY_FAN |
-		    UNIWILL_FEATURE_SECONDARY_FAN |
-		    UNIWILL_FEATURE_USB_C_POWER_PRIORITY,
-};
-
-static struct uniwill_device_descriptor tux_featureset_1_nvidia_descriptor __initdata = {
-	.features = UNIWILL_FEATURE_FN_LOCK |
-		    UNIWILL_FEATURE_SUPER_KEY |
-		    UNIWILL_FEATURE_CPU_TEMP |
-		    UNIWILL_FEATURE_GPU_TEMP |
-		    UNIWILL_FEATURE_PRIMARY_FAN |
-		    UNIWILL_FEATURE_SECONDARY_FAN |
-		    UNIWILL_FEATURE_USB_C_POWER_PRIORITY,
-};
-
-static struct uniwill_device_descriptor tux_featureset_2_nvidia_descriptor __initdata = {
-	.features = UNIWILL_FEATURE_FN_LOCK |
-		    UNIWILL_FEATURE_SUPER_KEY |
-		    UNIWILL_FEATURE_CPU_TEMP |
-		    UNIWILL_FEATURE_GPU_TEMP |
-		    UNIWILL_FEATURE_PRIMARY_FAN |
-		    UNIWILL_FEATURE_SECONDARY_FAN |
-		    UNIWILL_FEATURE_NVIDIA_CTGP_CONTROL |
-		    UNIWILL_FEATURE_USB_C_POWER_PRIORITY,
-};
-
-static struct uniwill_device_descriptor tux_featureset_3_descriptor __initdata = {
-	.features = UNIWILL_FEATURE_FN_LOCK |
-		    UNIWILL_FEATURE_SUPER_KEY |
-		    UNIWILL_FEATURE_CPU_TEMP |
-		    UNIWILL_FEATURE_PRIMARY_FAN |
-		    UNIWILL_FEATURE_SECONDARY_FAN |
-		    UNIWILL_FEATURE_KEYBOARD_BACKLIGHT |
-		    UNIWILL_FEATURE_AC_AUTO_BOOT |
-		    UNIWILL_FEATURE_USB_POWERSHARE,
-	.kbd_led_max_brightness = 4,
-};
-
-static struct uniwill_device_descriptor tux_featureset_3_nvidia_descriptor __initdata = {
-	.features = UNIWILL_FEATURE_FN_LOCK |
-		    UNIWILL_FEATURE_SUPER_KEY |
-		    UNIWILL_FEATURE_CPU_TEMP |
-		    UNIWILL_FEATURE_GPU_TEMP |
-		    UNIWILL_FEATURE_PRIMARY_FAN |
-		    UNIWILL_FEATURE_SECONDARY_FAN |
-		    UNIWILL_FEATURE_NVIDIA_CTGP_CONTROL,
-};
-
-static int phxtxx1_probe(struct uniwill_data *data)
-{
-	unsigned int value;
-	int ret;
-
-	ret = regmap_read(data->regmap, EC_ADDR_PROJECT_ID, &value);
-	if (ret < 0)
-		return ret;
-
-	if (value == PROJECT_ID_PH4TRX1 || value == PROJECT_ID_PH6TRX1)
-		data->features |= UNIWILL_FEATURE_SECONDARY_FAN;
-
-	return 0;
-};
-
-static struct uniwill_device_descriptor phxtxx1_descriptor __initdata = {
-	.features = UNIWILL_FEATURE_FN_LOCK |
-		    UNIWILL_FEATURE_SUPER_KEY |
-		    UNIWILL_FEATURE_CPU_TEMP |
-		    UNIWILL_FEATURE_PRIMARY_FAN |
-		    UNIWILL_FEATURE_USB_C_POWER_PRIORITY,
-	.probe = phxtxx1_probe,
-};
-
-static int phxarx1_phxaqf1_probe(struct uniwill_data *data)
-{
-	unsigned int value;
-	int ret;
-
-	ret = regmap_read(data->regmap, EC_ADDR_SYSTEM_ID, &value);
-	if (ret < 0)
-		return ret;
-
-	if (value & HAS_GPU)
-		data->features |= UNIWILL_FEATURE_GPU_TEMP |
-				  UNIWILL_FEATURE_NVIDIA_CTGP_CONTROL;
-
-	return 0;
-};
-
-static struct uniwill_device_descriptor phxarx1_phxaqf1_descriptor __initdata = {
-	.features = UNIWILL_FEATURE_FN_LOCK |
-		    UNIWILL_FEATURE_SUPER_KEY |
-		    UNIWILL_FEATURE_CPU_TEMP |
-		    UNIWILL_FEATURE_PRIMARY_FAN |
-		    UNIWILL_FEATURE_SECONDARY_FAN |
-		    UNIWILL_FEATURE_USB_C_POWER_PRIORITY,
-	.probe = phxarx1_phxaqf1_probe,
-};
-
-static struct uniwill_device_descriptor pf5pu1g_descriptor __initdata = {
-	.features = UNIWILL_FEATURE_FN_LOCK |
-		    UNIWILL_FEATURE_SUPER_KEY |
-		    UNIWILL_FEATURE_CPU_TEMP |
-		    UNIWILL_FEATURE_PRIMARY_FAN,
-};
-
-static struct uniwill_device_descriptor x4sp4nal_descriptor __initdata = {
-	.features = UNIWILL_FEATURE_FN_LOCK |
-		    UNIWILL_FEATURE_SUPER_KEY |
-		    UNIWILL_FEATURE_BATTERY_CHARGE_MODES |
-		    UNIWILL_FEATURE_CPU_TEMP |
-		    UNIWILL_FEATURE_PRIMARY_FAN |
-		    UNIWILL_FEATURE_SECONDARY_FAN |
-		    UNIWILL_FEATURE_KEYBOARD_BACKLIGHT |
-		    UNIWILL_FEATURE_AC_AUTO_BOOT |
-		    UNIWILL_FEATURE_USB_POWERSHARE,
-	.kbd_led_max_brightness = 2,
-};
-
-static const struct dmi_system_id uniwill_dmi_table[] __initconst = {
-	{
-		.ident = "AiStone X4SP4NAL",
-		.matches = {
-			DMI_MATCH(DMI_SYS_VENDOR, "AiStone"),
-			DMI_EXACT_MATCH(DMI_BOARD_NAME, "X4SP4NAL"),
-		},
-		.driver_data = &x4sp4nal_descriptor,
-	},
-	{
-		.ident = "MACHENIKE L16 Pro",
-		.matches = {
-			DMI_MATCH(DMI_SYS_VENDOR, "MACHENIKE"),
-			DMI_EXACT_MATCH(DMI_BOARD_NAME, "L16P"),
-		},
-		.driver_data = &machenike_l16p_descriptor,
-	},
-	{
-		.ident = "XMG FUSION 15 (L19)",
-		.matches = {
-			DMI_MATCH(DMI_SYS_VENDOR, "SchenkerTechnologiesGmbH"),
-			DMI_EXACT_MATCH(DMI_BOARD_NAME, "LAPQC71A"),
-		},
-		.driver_data = &lapqc71a_lapqc71b_descriptor,
-	},
-	{
-		.ident = "XMG FUSION 15 (L19)",
-		.matches = {
-			DMI_MATCH(DMI_SYS_VENDOR, "SchenkerTechnologiesGmbH"),
-			DMI_EXACT_MATCH(DMI_BOARD_NAME, "LAPQC71B"),
-		},
-		.driver_data = &lapqc71a_lapqc71b_descriptor,
-	},
-	{
-		.ident = "XMG FUSION 15 (L19)",
-		.matches = {
-			DMI_MATCH(DMI_SYS_VENDOR, "TUXEDO"),
-			DMI_EXACT_MATCH(DMI_BOARD_NAME, "LAPQC71A"),
-		},
-		.driver_data = &lapqc71a_lapqc71b_descriptor,
-	},
-	{
-		.ident = "XMG FUSION 15 (L19)",
-		.matches = {
-			DMI_MATCH(DMI_SYS_VENDOR, "TUXEDO"),
-			DMI_EXACT_MATCH(DMI_BOARD_NAME, "LAPQC71B"),
-		},
-		.driver_data = &lapqc71a_lapqc71b_descriptor,
-	},
-	{
-		.ident = "Intel NUC x15",
-		.matches = {
-			DMI_EXACT_MATCH(DMI_SYS_VENDOR, "Intel(R) Client Systems"),
-			DMI_EXACT_MATCH(DMI_PRODUCT_NAME, "LAPAC71H"),
-		},
-		.driver_data = &lapac71h_descriptor,
-	},
-	{
-		.ident = "Intel NUC x15",
-		.matches = {
-			DMI_EXACT_MATCH(DMI_SYS_VENDOR, "Intel(R) Client Systems"),
-			DMI_EXACT_MATCH(DMI_PRODUCT_NAME, "LAPKC71F"),
-		},
-		.driver_data = &lapkc71f_descriptor,
-	},
-	{
-		.ident = "TUXEDO InfinityBook Pro 14 Gen6 Intel",
-		.matches = {
-			DMI_MATCH(DMI_SYS_VENDOR, "TUXEDO"),
-			DMI_EXACT_MATCH(DMI_BOARD_NAME, "PHxTxX1"),
-		},
-		.driver_data = &phxtxx1_descriptor,
-	},
-	{
-		.ident = "TUXEDO InfinityBook Pro 14 Gen6 Intel",
-		.matches = {
-			DMI_MATCH(DMI_SYS_VENDOR, "TUXEDO"),
-			DMI_EXACT_MATCH(DMI_BOARD_NAME, "PHxTQx1"),
-		},
-		.driver_data = &tux_featureset_2_nvidia_descriptor,
-	},
-	{
-		.ident = "TUXEDO InfinityBook Pro 14/16 Gen7 Intel",
-		.matches = {
-			DMI_MATCH(DMI_SYS_VENDOR, "TUXEDO"),
-			DMI_EXACT_MATCH(DMI_BOARD_NAME, "PHxARX1_PHxAQF1"),
-		},
-		.driver_data = &phxarx1_phxaqf1_descriptor,
-	},
-	{
-		.ident = "TUXEDO InfinityBook Pro 16 Gen7 Intel/Commodore Omnia-Book Pro Gen 7",
-		.matches = {
-			DMI_MATCH(DMI_SYS_VENDOR, "TUXEDO"),
-			DMI_EXACT_MATCH(DMI_BOARD_NAME, "PH6AG01_PH6AQ71_PH6AQI1"),
-		},
-		.driver_data = &tux_featureset_2_nvidia_descriptor,
-	},
-	{
-		.ident = "TUXEDO InfinityBook Pro 14/16 Gen8 Intel/Commodore Omnia-Book Pro Gen 8",
-		.matches = {
-			DMI_MATCH(DMI_SYS_VENDOR, "TUXEDO"),
-			DMI_EXACT_MATCH(DMI_BOARD_NAME, "PH4PRX1_PH6PRX1"),
-		},
-		.driver_data = &tux_featureset_1_descriptor,
-	},
-	{
-		.ident = "TUXEDO InfinityBook Pro 14 Gen8 Intel/Commodore Omnia-Book Pro Gen 8",
-		.matches = {
-			DMI_MATCH(DMI_SYS_VENDOR, "TUXEDO"),
-			DMI_EXACT_MATCH(DMI_BOARD_NAME, "PH4PG31"),
-		},
-		.driver_data = &tux_featureset_2_nvidia_descriptor,
-	},
-	{
-		.ident = "TUXEDO InfinityBook Pro 16 Gen8 Intel",
-		.matches = {
-			DMI_MATCH(DMI_SYS_VENDOR, "TUXEDO"),
-			DMI_EXACT_MATCH(DMI_BOARD_NAME, "PH6PG01_PH6PG71"),
-		},
-		.driver_data = &tux_featureset_2_nvidia_descriptor,
-	},
-	{
-		.ident = "TUXEDO InfinityBook Pro 14/15 Gen9 AMD",
-		.matches = {
-			DMI_MATCH(DMI_SYS_VENDOR, "TUXEDO"),
-			DMI_EXACT_MATCH(DMI_BOARD_NAME, "GXxHRXx"),
-		},
-		.driver_data = &tux_featureset_3_descriptor,
-	},
-	{
-		.ident = "TUXEDO InfinityBook Pro 14/15 Gen9 Intel/Commodore Omnia-Book 15 Gen9",
-		.matches = {
-			DMI_MATCH(DMI_SYS_VENDOR, "TUXEDO"),
-			DMI_EXACT_MATCH(DMI_BOARD_NAME, "GXxMRXx"),
-		},
-		.driver_data = &tux_featureset_3_descriptor,
-	},
-	{
-		.ident = "TUXEDO InfinityBook Pro 14/15 Gen10 AMD",
-		.matches = {
-			DMI_MATCH(DMI_SYS_VENDOR, "TUXEDO"),
-			DMI_EXACT_MATCH(DMI_BOARD_NAME, "XxHP4NAx"),
-		},
-		.driver_data = &tux_featureset_3_descriptor,
-	},
-	{
-		.ident = "TUXEDO InfinityBook Pro 14/15 Gen10 AMD",
-		.matches = {
-			DMI_MATCH(DMI_SYS_VENDOR, "TUXEDO"),
-			DMI_EXACT_MATCH(DMI_BOARD_NAME, "XxKK4NAx_XxSP4NAx"),
-		},
-		.driver_data = &tux_featureset_3_descriptor,
-	},
-	{
-		.ident = "TUXEDO InfinityBook Pro 15 Gen10 Intel",
-		.matches = {
-			DMI_MATCH(DMI_SYS_VENDOR, "TUXEDO"),
-			DMI_EXACT_MATCH(DMI_BOARD_NAME, "XxAR4NAx"),
-		},
-		.driver_data = &tux_featureset_3_descriptor,
-	},
-	{
-		.ident = "TUXEDO InfinityBook Max 15 Gen10 AMD",
-		.matches = {
-			DMI_MATCH(DMI_SYS_VENDOR, "TUXEDO"),
-			DMI_EXACT_MATCH(DMI_BOARD_NAME, "X5KK45xS_X5SP45xS"),
-		},
-		.driver_data = &tux_featureset_3_nvidia_descriptor,
-	},
-	{
-		.ident = "TUXEDO InfinityBook Max 16 Gen10 AMD",
-		.matches = {
-			DMI_MATCH(DMI_SYS_VENDOR, "TUXEDO"),
-			DMI_EXACT_MATCH(DMI_BOARD_NAME, "X6HP45xU"),
-		},
-		.driver_data = &tux_featureset_3_nvidia_descriptor,
-	},
-	{
-		.ident = "TUXEDO InfinityBook Max 16 Gen10 AMD",
-		.matches = {
-			DMI_MATCH(DMI_SYS_VENDOR, "TUXEDO"),
-			DMI_EXACT_MATCH(DMI_BOARD_NAME, "X6KK45xU_X6SP45xU"),
-		},
-		.driver_data = &tux_featureset_3_nvidia_descriptor,
-	},
-	{
-		.ident = "TUXEDO InfinityBook Max 15 Gen10 Intel",
-		.matches = {
-			DMI_MATCH(DMI_SYS_VENDOR, "TUXEDO"),
-			DMI_EXACT_MATCH(DMI_BOARD_NAME, "X5AR45xS"),
-		},
-		.driver_data = &tux_featureset_3_nvidia_descriptor,
-	},
-	{
-		.ident = "TUXEDO InfinityBook Max 16 Gen10 Intel",
-		.matches = {
-			DMI_MATCH(DMI_SYS_VENDOR, "TUXEDO"),
-			DMI_EXACT_MATCH(DMI_BOARD_NAME, "X6AR55xU"),
-		},
-		.driver_data = &tux_featureset_3_nvidia_descriptor,
-	},
-	{
-		.ident = "TUXEDO Polaris 15 Gen1 AMD",
-		.matches = {
-			DMI_MATCH(DMI_SYS_VENDOR, "TUXEDO"),
-			DMI_EXACT_MATCH(DMI_BOARD_NAME, "POLARIS1501A1650TI"),
-		},
-		.driver_data = &tux_featureset_1_nvidia_descriptor,
-	},
-	{
-		.ident = "TUXEDO Polaris 15 Gen1 AMD",
-		.matches = {
-			DMI_MATCH(DMI_SYS_VENDOR, "TUXEDO"),
-			DMI_EXACT_MATCH(DMI_BOARD_NAME, "POLARIS1501A2060"),
-		},
-		.driver_data = &tux_featureset_1_nvidia_descriptor,
-	},
-	{
-		.ident = "TUXEDO Polaris 17 Gen1 AMD",
-		.matches = {
-			DMI_MATCH(DMI_SYS_VENDOR, "TUXEDO"),
-			DMI_EXACT_MATCH(DMI_BOARD_NAME, "POLARIS1701A1650TI"),
-		},
-		.driver_data = &tux_featureset_1_nvidia_descriptor,
-	},
-	{
-		.ident = "TUXEDO Polaris 17 Gen1 AMD",
-		.matches = {
-			DMI_MATCH(DMI_SYS_VENDOR, "TUXEDO"),
-			DMI_EXACT_MATCH(DMI_BOARD_NAME, "POLARIS1701A2060"),
-		},
-		.driver_data = &tux_featureset_1_nvidia_descriptor,
-	},
-	{
-		.ident = "TUXEDO Polaris 15 Gen1 Intel",
-		.matches = {
-			DMI_MATCH(DMI_SYS_VENDOR, "TUXEDO"),
-			DMI_EXACT_MATCH(DMI_BOARD_NAME, "POLARIS1501I1650TI"),
-		},
-		.driver_data = &tux_featureset_1_nvidia_descriptor,
-	},
-	{
-		.ident = "TUXEDO Polaris 15 Gen1 Intel",
-		.matches = {
-			DMI_MATCH(DMI_SYS_VENDOR, "TUXEDO"),
-			DMI_EXACT_MATCH(DMI_BOARD_NAME, "POLARIS1501I2060"),
-		},
-		.driver_data = &tux_featureset_1_nvidia_descriptor,
-	},
-	{
-		.ident = "TUXEDO Polaris 17 Gen1 Intel",
-		.matches = {
-			DMI_MATCH(DMI_SYS_VENDOR, "TUXEDO"),
-			DMI_EXACT_MATCH(DMI_BOARD_NAME, "POLARIS1701I1650TI"),
-		},
-		.driver_data = &tux_featureset_1_nvidia_descriptor,
-	},
-	{
-		.ident = "TUXEDO Polaris 17 Gen1 Intel",
-		.matches = {
-			DMI_MATCH(DMI_SYS_VENDOR, "TUXEDO"),
-			DMI_EXACT_MATCH(DMI_BOARD_NAME, "POLARIS1701I2060"),
-		},
-		.driver_data = &tux_featureset_1_nvidia_descriptor,
-	},
-	{
-		.ident = "TUXEDO Trinity 15 Intel Gen1",
-		.matches = {
-			DMI_MATCH(DMI_SYS_VENDOR, "TUXEDO"),
-			DMI_EXACT_MATCH(DMI_BOARD_NAME, "TRINITY1501I"),
-		},
-		.driver_data = &tux_featureset_1_nvidia_descriptor,
-	},
-	{
-		.ident = "TUXEDO Trinity 17 Intel Gen1",
-		.matches = {
-			DMI_MATCH(DMI_SYS_VENDOR, "TUXEDO"),
-			DMI_EXACT_MATCH(DMI_BOARD_NAME, "TRINITY1701I"),
-		},
-		.driver_data = &tux_featureset_1_nvidia_descriptor,
-	},
-	{
-		.ident = "TUXEDO Polaris 15/17 Gen2 AMD",
-		.matches = {
-			DMI_MATCH(DMI_SYS_VENDOR, "TUXEDO"),
-			DMI_EXACT_MATCH(DMI_BOARD_NAME, "GMxMGxx"),
-		},
-		.driver_data = &tux_featureset_2_nvidia_descriptor,
-	},
-	{
-		.ident = "TUXEDO Polaris 15/17 Gen2 Intel",
-		.matches = {
-			DMI_MATCH(DMI_SYS_VENDOR, "TUXEDO"),
-			DMI_EXACT_MATCH(DMI_BOARD_NAME, "GMxNGxx"),
-		},
-		.driver_data = &tux_featureset_2_nvidia_descriptor,
-	},
-	{
-		.ident = "TUXEDO Stellaris/Polaris 15/17 Gen3 AMD",
-		.matches = {
-			DMI_MATCH(DMI_SYS_VENDOR, "TUXEDO"),
-			DMI_EXACT_MATCH(DMI_BOARD_NAME, "GMxZGxx"),
-		},
-		.driver_data = &tux_featureset_2_nvidia_descriptor,
-	},
-	{
-		.ident = "TUXEDO Stellaris/Polaris 15/17 Gen3 Intel",
-		.matches = {
-			DMI_MATCH(DMI_SYS_VENDOR, "TUXEDO"),
-			DMI_EXACT_MATCH(DMI_BOARD_NAME, "GMxTGxx"),
-		},
-		.driver_data = &tux_featureset_2_nvidia_descriptor,
-	},
-	{
-		.ident = "TUXEDO Stellaris/Polaris 15/17 Gen4 AMD",
-		.matches = {
-			DMI_MATCH(DMI_SYS_VENDOR, "TUXEDO"),
-			DMI_EXACT_MATCH(DMI_BOARD_NAME, "GMxRGxx"),
-		},
-		.driver_data = &tux_featureset_3_nvidia_descriptor,
-	},
-	{
-		.ident = "TUXEDO Stellaris 15 Gen4 Intel",
-		.matches = {
-			DMI_MATCH(DMI_SYS_VENDOR, "TUXEDO"),
-			DMI_EXACT_MATCH(DMI_BOARD_NAME, "GMxAGxx"),
-		},
-		.driver_data = &tux_featureset_3_nvidia_descriptor,
-	},
-	{
-		.ident = "TUXEDO Polaris 15/17 Gen5 AMD",
-		.matches = {
-			DMI_MATCH(DMI_SYS_VENDOR, "TUXEDO"),
-			DMI_EXACT_MATCH(DMI_BOARD_NAME, "GMxXGxx"),
-		},
-		.driver_data = &tux_featureset_2_nvidia_descriptor,
-	},
-	{
-		.ident = "TUXEDO Stellaris 16 Gen5 AMD",
-		.matches = {
-			DMI_MATCH(DMI_SYS_VENDOR, "TUXEDO"),
-			DMI_EXACT_MATCH(DMI_BOARD_NAME, "GM6XGxX"),
-		},
-		.driver_data = &tux_featureset_3_nvidia_descriptor,
-	},
-	{
-		.ident = "TUXEDO Stellaris 16/17 Gen5 Intel/Commodore ORION Gen 5",
-		.matches = {
-			DMI_MATCH(DMI_SYS_VENDOR, "TUXEDO"),
-			DMI_EXACT_MATCH(DMI_BOARD_NAME, "GMxPXxx"),
-		},
-		.driver_data = &tux_featureset_3_nvidia_descriptor,
-	},
-	{
-		.ident = "TUXEDO Stellaris Slim 15 Gen6 AMD",
-		.matches = {
-			DMI_MATCH(DMI_SYS_VENDOR, "TUXEDO"),
-			DMI_EXACT_MATCH(DMI_BOARD_NAME, "GMxHGxx"),
-		},
-		.driver_data = &tux_featureset_3_nvidia_descriptor,
-	},
-	{
-		.ident = "TUXEDO Stellaris Slim 15 Gen6 Intel/Commodore ORION Slim 15 Gen6",
-		.matches = {
-			DMI_MATCH(DMI_SYS_VENDOR, "TUXEDO"),
-			DMI_EXACT_MATCH(DMI_BOARD_NAME, "GM5IXxA"),
-		},
-		.driver_data = &tux_featureset_3_nvidia_descriptor,
-	},
-	{
-		.ident = "TUXEDO Stellaris 16 Gen6 Intel/Commodore ORION 16 Gen6",
-		.matches = {
-			DMI_MATCH(DMI_SYS_VENDOR, "TUXEDO"),
-			DMI_EXACT_MATCH(DMI_BOARD_NAME, "GM6IXxB_MB1"),
-		},
-		.driver_data = &tux_featureset_3_nvidia_descriptor,
-	},
-	{
-		.ident = "TUXEDO Stellaris 16 Gen6 Intel/Commodore ORION 16 Gen6",
-		.matches = {
-			DMI_MATCH(DMI_SYS_VENDOR, "TUXEDO"),
-			DMI_EXACT_MATCH(DMI_BOARD_NAME, "GM6IXxB_MB2"),
-		},
-		.driver_data = &tux_featureset_3_nvidia_descriptor,
-	},
-	{
-		.ident = "TUXEDO Stellaris 17 Gen6 Intel/Commodore ORION 17 Gen6",
-		.matches = {
-			DMI_MATCH(DMI_SYS_VENDOR, "TUXEDO"),
-			DMI_EXACT_MATCH(DMI_BOARD_NAME, "GM7IXxN"),
-		},
-		.driver_data = &tux_featureset_3_nvidia_descriptor,
-	},
-	{
-		.ident = "TUXEDO Stellaris 16 Gen7 AMD",
-		.matches = {
-			DMI_MATCH(DMI_SYS_VENDOR, "TUXEDO"),
-			DMI_EXACT_MATCH(DMI_BOARD_NAME, "X6FR5xxY"),
-		},
-		.driver_data = &tux_featureset_3_nvidia_descriptor,
-	},
-	{
-		.ident = "TUXEDO Stellaris 16 Gen7 Intel",
-		.matches = {
-			DMI_MATCH(DMI_SYS_VENDOR, "TUXEDO"),
-			DMI_EXACT_MATCH(DMI_BOARD_NAME, "X6AR5xxY"),
-		},
-		.driver_data = &tux_featureset_3_nvidia_descriptor,
-	},
-	{
-		.ident = "TUXEDO Stellaris 16 Gen7 Intel",
-		.matches = {
-			DMI_MATCH(DMI_SYS_VENDOR, "TUXEDO"),
-			DMI_EXACT_MATCH(DMI_BOARD_NAME, "X6AR5xxY_mLED"),
-		},
-		.driver_data = &tux_featureset_3_nvidia_descriptor,
-	},
-	{
-		.ident = "TUXEDO Book BA15 Gen10 AMD",
-		.matches = {
-			DMI_MATCH(DMI_SYS_VENDOR, "TUXEDO"),
-			DMI_EXACT_MATCH(DMI_BOARD_NAME, "PF5PU1G"),
-		},
-		.driver_data = &pf5pu1g_descriptor,
-	},
-	{
-		.ident = "TUXEDO Pulse 14 Gen1 AMD",
-		.matches = {
-			DMI_MATCH(DMI_SYS_VENDOR, "TUXEDO"),
-			DMI_EXACT_MATCH(DMI_BOARD_NAME, "PULSE1401"),
-		},
-		.driver_data = &tux_featureset_1_descriptor,
-	},
-	{
-		.ident = "TUXEDO Pulse 15 Gen1 AMD",
-		.matches = {
-			DMI_MATCH(DMI_SYS_VENDOR, "TUXEDO"),
-			DMI_EXACT_MATCH(DMI_BOARD_NAME, "PULSE1501"),
-		},
-		.driver_data = &tux_featureset_1_descriptor,
-	},
-	{
-		.ident = "TUXEDO Pulse 15 Gen2 AMD",
-		.matches = {
-			DMI_MATCH(DMI_SYS_VENDOR, "TUXEDO"),
-			DMI_EXACT_MATCH(DMI_BOARD_NAME, "PF5LUXG"),
-		},
-		.driver_data = &tux_featureset_1_descriptor,
-	},
-	{ }
-};
-MODULE_DEVICE_TABLE(dmi, uniwill_dmi_table);
-
 static int __init uniwill_init(void)
 {
-	const struct uniwill_device_descriptor *descriptor;
-	const struct dmi_system_id *id;
 	int ret;
 
-	id = dmi_first_match(uniwill_dmi_table);
-	if (!id) {
-		if (!force)
-			return -ENODEV;
+	ret = uniwill_dmi_match(&device_descriptor);
+	if (ret < 0)
+		return ret;
 
-		pr_warn("Loading on a potentially unsupported device\n");
+	acpi_interface_available = uniwill_ec_acpi_interface_available();
+	if (acpi_interface_available) {
+		ret = uniwill_ec_register_platform_driver();
 	} else {
-		/*
-		 * Some devices might support additional features depending on
-		 * the BIOS version/date, so we call this callback to let them
-		 * modify their device descriptor accordingly.
-		 */
-		if (id->callback) {
-			ret = id->callback(id);
-			if (ret < 0)
-				return ret;
-		}
-
-		descriptor = id->driver_data;
-		device_descriptor = *descriptor;
+		pr_info("ACPI device not found, falling back to WMI device\n");
+		ret = uniwill_ec_register_wmi_driver();
 	}
 
-	if (force) {
-		/* Assume that the device supports all features except the charge limit */
-		device_descriptor.features = UINT_MAX & ~UNIWILL_FEATURE_BATTERY_CHARGE_LIMIT;
-		/* Some models only support 3 brightness levels */
-		device_descriptor.kbd_led_max_brightness = 4;
-		/* Some models only support 36 brightness levels per color component */
-		device_descriptor.lightbar_max_brightness = 200;
-		pr_warn("Enabling potentially unsupported features\n");
-	}
-
-	ret = platform_driver_register(&uniwill_driver);
 	if (ret < 0)
 		return ret;
 
 	ret = uniwill_wmi_register_driver();
 	if (ret < 0) {
-		platform_driver_unregister(&uniwill_driver);
+		if (acpi_interface_available)
+			uniwill_ec_unregister_platform_driver();
+		else
+			uniwill_ec_unregister_wmi_driver();
+
 		return ret;
 	}
 
@@ -3149,7 +2266,11 @@ module_init(uniwill_init);
 static void __exit uniwill_exit(void)
 {
 	uniwill_wmi_unregister_driver();
-	platform_driver_unregister(&uniwill_driver);
+
+	if (acpi_interface_available)
+		uniwill_ec_unregister_platform_driver();
+	else
+		uniwill_ec_unregister_wmi_driver();
 }
 module_exit(uniwill_exit);
 
