@@ -165,9 +165,10 @@
 #define EC_ADDR_LIGHTBAR_AC_CTRL	0x0748
 #define LIGHTBAR_APP_EXISTS		BIT(0)
 #define LIGHTBAR_POWER_SAVE		BIT(1)
-#define LIGHTBAR_S0_OFF			BIT(2)
-#define LIGHTBAR_S3_OFF			BIT(3)	// Breathing animation when suspended
-#define LIGHTBAR_WELCOME		BIT(7)	// Rainbow animation
+#define LIGHTBAR_S0_OFF			BIT(2)	/* Also disables animations */
+#define LIGHTBAR_S3_OFF			BIT(3)	/* No breathing animation when in s2ram */
+#define LIGHTBAR_MODERN_STANDBY_ON	BIT(6)	/* Breathing animation when in s2idle */
+#define LIGHTBAR_WELCOME		BIT(7)	/* Rainbow animation */
 
 #define EC_ADDR_LIGHTBAR_AC_RED		0x0749
 
@@ -306,7 +307,7 @@
 #define EC_ADDR_USB_C_POWER_PRIORITY	0x07CC
 #define USB_C_POWER_PRIORITY		BIT(7)
 
-/* Same bits as EC_ADDR_LIGHTBAR_AC_CTRL except LIGHTBAR_S3_OFF */
+/* Same bits as EC_ADDR_LIGHTBAR_AC_CTRL except LIGHTBAR_S3_OFF and LIGHTBAR_MODERN_STANDBY_ON */
 #define EC_ADDR_LIGHTBAR_BAT_CTRL	0x07E2
 
 #define EC_ADDR_LIGHTBAR_BAT_RED	0x07E3
@@ -398,7 +399,7 @@ struct uniwill_data {
 	struct mutex super_key_lock;	/* Protects the toggling of the super key lock state */
 	struct list_head batteries;
 	struct mutex led_lock;		/* Protects writes to the lightbar registers */
-	u8 lightbar_max_brightness;
+	u8 lightbar_max_intensity;
 	struct led_classdev_mc led_mc_cdev;
 	struct mc_subled led_mc_subled_info[LED_CHANNELS];
 	bool kbd_led_single_color;
@@ -429,7 +430,7 @@ struct uniwill_device_descriptor {
 	unsigned int features;
 	bool kbd_led_single_color;
 	u8 kbd_led_max_brightness;
-	u8 lightbar_max_brightness;
+	u8 lightbar_max_intensity;
 	/* Executed during driver probing */
 	int (*probe)(struct uniwill_data *data);
 };
@@ -898,51 +899,6 @@ static ssize_t touchpad_toggle_enable_show(struct device *dev, struct device_att
 
 static DEVICE_ATTR_RW(touchpad_toggle_enable);
 
-static ssize_t rainbow_animation_store(struct device *dev, struct device_attribute *attr,
-				       const char *buf, size_t count)
-{
-	struct uniwill_data *data = dev_get_drvdata(dev);
-	unsigned int value;
-	bool enable;
-	int ret;
-
-	ret = kstrtobool(buf, &enable);
-	if (ret < 0)
-		return ret;
-
-	if (enable)
-		value = LIGHTBAR_WELCOME;
-	else
-		value = 0;
-
-	guard(mutex)(&data->led_lock);
-
-	ret = regmap_update_bits(data->regmap, EC_ADDR_LIGHTBAR_AC_CTRL, LIGHTBAR_WELCOME, value);
-	if (ret < 0)
-		return ret;
-
-	ret = regmap_update_bits(data->regmap, EC_ADDR_LIGHTBAR_BAT_CTRL, LIGHTBAR_WELCOME, value);
-	if (ret < 0)
-		return ret;
-
-	return count;
-}
-
-static ssize_t rainbow_animation_show(struct device *dev, struct device_attribute *attr, char *buf)
-{
-	struct uniwill_data *data = dev_get_drvdata(dev);
-	unsigned int value;
-	int ret;
-
-	ret = regmap_read(data->regmap, EC_ADDR_LIGHTBAR_AC_CTRL, &value);
-	if (ret < 0)
-		return ret;
-
-	return sysfs_emit(buf, "%d\n", !!(value & LIGHTBAR_WELCOME));
-}
-
-static DEVICE_ATTR_RW(rainbow_animation);
-
 static ssize_t breathing_in_suspend_store(struct device *dev, struct device_attribute *attr,
 					  const char *buf, size_t count)
 {
@@ -956,12 +912,13 @@ static ssize_t breathing_in_suspend_store(struct device *dev, struct device_attr
 		return ret;
 
 	if (enable)
-		value = 0;
+		value = LIGHTBAR_MODERN_STANDBY_ON;
 	else
 		value = LIGHTBAR_S3_OFF;
 
 	/* We only access a single register here, so we do not need to use data->led_lock */
-	ret = regmap_update_bits(data->regmap, EC_ADDR_LIGHTBAR_AC_CTRL, LIGHTBAR_S3_OFF, value);
+	ret = regmap_update_bits(data->regmap, EC_ADDR_LIGHTBAR_AC_CTRL,
+				 LIGHTBAR_S3_OFF | LIGHTBAR_MODERN_STANDBY_ON, value);
 	if (ret < 0)
 		return ret;
 
@@ -979,6 +936,10 @@ static ssize_t breathing_in_suspend_show(struct device *dev, struct device_attri
 	if (ret < 0)
 		return ret;
 
+	/*
+	 * We only test LIGHTBAR_S3_OFF here, because LIGHTBAR_MODERN_STANDBY_ON
+	 * should have the exact opposite value.
+	 */
 	return sysfs_emit(buf, "%d\n", !(value & LIGHTBAR_S3_OFF));
 }
 
@@ -1256,7 +1217,6 @@ static struct attribute *uniwill_attrs[] = {
 	&dev_attr_super_key_enable.attr,
 	&dev_attr_touchpad_toggle_enable.attr,
 	/* Lightbar-related */
-	&dev_attr_rainbow_animation.attr,
 	&dev_attr_breathing_in_suspend.attr,
 	/* Power-management-related */
 	&dev_attr_ctgp_offset.attr,
@@ -1286,8 +1246,7 @@ static umode_t uniwill_attr_is_visible(struct kobject *kobj, struct attribute *a
 			return attr->mode;
 	}
 
-	if (attr == &dev_attr_rainbow_animation.attr ||
-	    attr == &dev_attr_breathing_in_suspend.attr) {
+	if (attr == &dev_attr_breathing_in_suspend.attr) {
 		if (uniwill_device_supports(data, UNIWILL_FEATURE_LIGHTBAR))
 			return attr->mode;
 	}
@@ -1509,20 +1468,16 @@ static int uniwill_led_brightness_set(struct led_classdev *led_cdev, enum led_br
 	unsigned int value;
 	int ret;
 
-	ret = led_mc_calc_color_components(led_mc_cdev, brightness);
-	if (ret < 0)
-		return ret;
-
 	guard(mutex)(&data->led_lock);
 
 	for (int i = 0; i < LED_CHANNELS; i++) {
-		/* Prevent the brightness values from overflowing */
-		value = min(data->lightbar_max_brightness, data->led_mc_subled_info[i].brightness);
-		ret = regmap_write(data->regmap, uniwill_led_channel_to_ac_reg[i], value);
+		ret = regmap_write(data->regmap, uniwill_led_channel_to_ac_reg[i],
+				   data->led_mc_subled_info[i].intensity);
 		if (ret < 0)
 			return ret;
 
-		ret = regmap_write(data->regmap, uniwill_led_channel_to_bat_reg[i], value);
+		ret = regmap_write(data->regmap, uniwill_led_channel_to_bat_reg[i],
+				   data->led_mc_subled_info[i].intensity);
 		if (ret < 0)
 			return ret;
 	}
@@ -1539,7 +1494,61 @@ static int uniwill_led_brightness_set(struct led_classdev *led_cdev, enum led_br
 	return regmap_update_bits(data->regmap, EC_ADDR_LIGHTBAR_BAT_CTRL, LIGHTBAR_S0_OFF, value);
 }
 
-#define LIGHTBAR_MASK	(LIGHTBAR_APP_EXISTS | LIGHTBAR_S0_OFF | LIGHTBAR_S3_OFF | LIGHTBAR_WELCOME)
+static int uniwill_led_hw_control_set(struct led_classdev *led_cdev, unsigned long flags)
+{
+	struct led_classdev_mc *led_mc_cdev = lcdev_to_mccdev(led_cdev);
+	struct uniwill_data *data = container_of(led_mc_cdev, struct uniwill_data, led_mc_cdev);
+	unsigned int value;
+	int ret;
+
+	guard(mutex)(&data->led_lock);
+
+	if (flags)
+		value = LIGHTBAR_WELCOME;
+	else
+		value = LIGHTBAR_S0_OFF;
+
+	ret = regmap_update_bits(data->regmap, EC_ADDR_LIGHTBAR_AC_CTRL,
+				 LIGHTBAR_S0_OFF | LIGHTBAR_WELCOME, value);
+	if (ret < 0)
+		return ret;
+
+	ret = regmap_update_bits(data->regmap, EC_ADDR_LIGHTBAR_BAT_CTRL,
+				 LIGHTBAR_S0_OFF | LIGHTBAR_WELCOME, value);
+	if (ret < 0)
+		return ret;
+
+	/* The LED is always on during hw control */
+	led_cdev->brightness = flags;
+
+	return 0;
+}
+
+static int uniwill_lightbar_trigger_activate(struct led_classdev *led_cdev)
+{
+	return led_cdev->hw_control_set(led_cdev, 1);
+}
+
+static void uniwill_lightbar_trigger_deactivate(struct led_classdev *led_cdev)
+{
+	int ret;
+
+	ret = led_cdev->hw_control_set(led_cdev, 0);
+	if (ret < 0)
+		dev_err(led_cdev->dev, "Failed to stop rainbow animation: %d\n", ret);
+}
+
+static struct led_hw_trigger_type uniwill_lightbar_trigger_type;
+
+static struct led_trigger uniwill_lightbar_trigger = {
+	.name = "uniwill-rainbow",
+	.activate = uniwill_lightbar_trigger_activate,
+	.deactivate = uniwill_lightbar_trigger_deactivate,
+	.trigger_type = &uniwill_lightbar_trigger_type,
+};
+
+#define LIGHTBAR_MASK	(LIGHTBAR_APP_EXISTS | LIGHTBAR_S0_OFF | LIGHTBAR_S3_OFF | \
+			 LIGHTBAR_MODERN_STANDBY_ON | LIGHTBAR_WELCOME)
 
 static int uniwill_led_init(struct uniwill_data *data)
 {
@@ -1572,6 +1581,11 @@ static int uniwill_led_init(struct uniwill_data *data)
 		return ret;
 
 	value |= LIGHTBAR_APP_EXISTS;
+	if (value & LIGHTBAR_S3_OFF)
+		value &= ~LIGHTBAR_MODERN_STANDBY_ON;
+	else
+		value |= LIGHTBAR_MODERN_STANDBY_ON;
+
 	ret = regmap_write(data->regmap, EC_ADDR_LIGHTBAR_AC_CTRL, value);
 	if (ret < 0)
 		return ret;
@@ -1581,19 +1595,26 @@ static int uniwill_led_init(struct uniwill_data *data)
 	 * running on battery power.
 	 */
 	value |= LIGHTBAR_S3_OFF;
+	value &= ~LIGHTBAR_MODERN_STANDBY_ON;
 	ret = regmap_update_bits(data->regmap, EC_ADDR_LIGHTBAR_BAT_CTRL, LIGHTBAR_MASK, value);
 	if (ret < 0)
 		return ret;
 
 	data->led_mc_cdev.led_cdev.color = LED_COLOR_ID_MULTI;
-	data->led_mc_cdev.led_cdev.max_brightness = data->lightbar_max_brightness;
+	data->led_mc_cdev.led_cdev.max_brightness = 1;
 	data->led_mc_cdev.led_cdev.flags = LED_REJECT_NAME_CONFLICT;
 	data->led_mc_cdev.led_cdev.brightness_set_blocking = uniwill_led_brightness_set;
+	data->led_mc_cdev.led_cdev.trigger_type = &uniwill_lightbar_trigger_type;
+	data->led_mc_cdev.led_cdev.hw_control_trigger = uniwill_lightbar_trigger.name;
+	data->led_mc_cdev.led_cdev.hw_control_set = uniwill_led_hw_control_set;
 
 	if (value & LIGHTBAR_S0_OFF)
 		data->led_mc_cdev.led_cdev.brightness = 0;
 	else
-		data->led_mc_cdev.led_cdev.brightness = data->lightbar_max_brightness;
+		data->led_mc_cdev.led_cdev.brightness = 1;
+
+	if (value & LIGHTBAR_WELCOME)
+		data->led_mc_cdev.led_cdev.default_trigger = uniwill_lightbar_trigger.name;
 
 	for (int i = 0; i < LED_CHANNELS; i++) {
 		data->led_mc_subled_info[i].color_index = color_indices[i];
@@ -1604,9 +1625,9 @@ static int uniwill_led_init(struct uniwill_data *data)
 
 		/*
 		 * Make sure that the initial intensity value is not greater than
-		 * the maximum brightness.
+		 * the maximum intensity.
 		 */
-		value = min(data->lightbar_max_brightness, value);
+		value = min(data->lightbar_max_intensity, value);
 		ret = regmap_write(data->regmap, uniwill_led_channel_to_ac_reg[i], value);
 		if (ret < 0)
 			return ret;
@@ -1616,6 +1637,7 @@ static int uniwill_led_init(struct uniwill_data *data)
 			return ret;
 
 		data->led_mc_subled_info[i].intensity = value;
+		data->led_mc_subled_info[i].max_intensity = data->lightbar_max_intensity;
 		data->led_mc_subled_info[i].channel = i;
 	}
 
@@ -2338,7 +2360,7 @@ static int uniwill_probe(struct platform_device *pdev)
 	data->features = device_descriptor.features;
 	data->kbd_led_single_color = device_descriptor.kbd_led_single_color;
 	data->kbd_led_max_brightness = device_descriptor.kbd_led_max_brightness;
-	data->lightbar_max_brightness = device_descriptor.lightbar_max_brightness;
+	data->lightbar_max_intensity = device_descriptor.lightbar_max_intensity;
 
 	/*
 	 * Some devices might need to perform some device-specific initialization steps
@@ -2685,7 +2707,7 @@ static struct uniwill_device_descriptor lapqc71a_lapqc71b_descriptor __initdata 
 		    UNIWILL_FEATURE_GPU_TEMP |
 		    UNIWILL_FEATURE_PRIMARY_FAN |
 		    UNIWILL_FEATURE_SECONDARY_FAN,
-	.lightbar_max_brightness = 36,
+	.lightbar_max_intensity = 36,
 };
 
 static struct uniwill_device_descriptor lapac71h_descriptor __initdata = {
@@ -2709,7 +2731,7 @@ static struct uniwill_device_descriptor lapkc71f_descriptor __initdata = {
 		    UNIWILL_FEATURE_GPU_TEMP |
 		    UNIWILL_FEATURE_PRIMARY_FAN |
 		    UNIWILL_FEATURE_SECONDARY_FAN,
-	.lightbar_max_brightness = 200,
+	.lightbar_max_intensity = 200,
 };
 
 /*
@@ -3355,22 +3377,36 @@ static int __init uniwill_init(void)
 		device_descriptor.kbd_led_single_color = false;
 		/* Some models only support 3 brightness levels */
 		device_descriptor.kbd_led_max_brightness = 4;
-		/* Some models only support 36 brightness levels per color component */
-		device_descriptor.lightbar_max_brightness = 200;
+		/* Some models only support 36 intensity levels per color component */
+		device_descriptor.lightbar_max_intensity = 200;
 		pr_warn("Enabling potentially unsupported features\n");
 	}
 
-	ret = platform_driver_register(&uniwill_driver);
+	/*
+	 * We cannot register the trigger inside the .probe callback of the
+	 * platform driver, because each trigger needs a unique name.
+	 */
+	ret = led_trigger_register(&uniwill_lightbar_trigger);
 	if (ret < 0)
 		return ret;
 
+	ret = platform_driver_register(&uniwill_driver);
+	if (ret < 0)
+		goto err_platform;
+
 	ret = uniwill_wmi_register_driver();
-	if (ret < 0) {
-		platform_driver_unregister(&uniwill_driver);
-		return ret;
-	}
+	if (ret < 0)
+		goto err_wmi;
 
 	return 0;
+
+err_wmi:
+	platform_driver_unregister(&uniwill_driver);
+
+err_platform:
+	led_trigger_unregister(&uniwill_lightbar_trigger);
+
+	return ret;
 }
 module_init(uniwill_init);
 
@@ -3378,6 +3414,7 @@ static void __exit uniwill_exit(void)
 {
 	uniwill_wmi_unregister_driver();
 	platform_driver_unregister(&uniwill_driver);
+	led_trigger_unregister(&uniwill_lightbar_trigger);
 }
 module_exit(uniwill_exit);
 
