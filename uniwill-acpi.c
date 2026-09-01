@@ -1600,7 +1600,7 @@ static int uniwill_led_init(struct uniwill_data *data)
 	if (ret < 0)
 		return ret;
 
-	data->led_mc_cdev.led_cdev.color = LED_COLOR_ID_MULTI;
+	data->led_mc_cdev.led_cdev.color = LED_COLOR_ID_RGB;
 	data->led_mc_cdev.led_cdev.max_brightness = 1;
 	data->led_mc_cdev.led_cdev.flags = LED_REJECT_NAME_CONFLICT;
 	data->led_mc_cdev.led_cdev.brightness_set_blocking = uniwill_led_brightness_set;
@@ -1843,7 +1843,7 @@ static int uniwill_rgb_kbd_led_init(struct uniwill_data *data)
 		return ret;
 
 	data->kbd_led_mc_cdev.led_cdev.max_brightness = data->kbd_led_max_brightness;
-	data->kbd_led_mc_cdev.led_cdev.color = LED_COLOR_ID_MULTI;
+	data->kbd_led_mc_cdev.led_cdev.color = LED_COLOR_ID_RGB;
 	data->kbd_led_mc_cdev.led_cdev.flags = LED_BRIGHT_HW_CHANGED | LED_REJECT_NAME_CONFLICT;
 	data->kbd_led_mc_cdev.led_cdev.brightness_set_blocking = uniwill_kbd_led_mc_brightness_set;
 	data->kbd_led_mc_cdev.led_cdev.brightness_get = uniwill_kbd_led_mc_brightness_get;
@@ -2721,6 +2721,20 @@ static struct uniwill_device_descriptor lapac71h_descriptor __initdata = {
 		    UNIWILL_FEATURE_SECONDARY_FAN,
 };
 
+static struct uniwill_device_descriptor lapkc71e_descriptor __initdata = {
+	.features = UNIWILL_FEATURE_FN_LOCK |
+		    UNIWILL_FEATURE_SUPER_KEY |
+		    UNIWILL_FEATURE_TOUCHPAD_TOGGLE |
+		    UNIWILL_FEATURE_LIGHTBAR |
+		    UNIWILL_FEATURE_BATTERY_CHARGE_LIMIT |
+		    UNIWILL_FEATURE_CPU_TEMP |
+		    UNIWILL_FEATURE_GPU_TEMP |
+		    UNIWILL_FEATURE_PRIMARY_FAN |
+		    UNIWILL_FEATURE_SECONDARY_FAN |
+		    UNIWILL_FEATURE_NVIDIA_CTGP_CONTROL,
+	.lightbar_max_intensity = 200,
+};
+
 static struct uniwill_device_descriptor lapkc71f_descriptor __initdata = {
 	.features = UNIWILL_FEATURE_FN_LOCK |
 		    UNIWILL_FEATURE_SUPER_KEY |
@@ -2945,6 +2959,14 @@ static const struct dmi_system_id uniwill_dmi_table[] __initconst = {
 			DMI_EXACT_MATCH(DMI_PRODUCT_NAME, "LAPAC71H"),
 		},
 		.driver_data = &lapac71h_descriptor,
+	},
+	{
+		.ident = "Intel NUC x15",
+		.matches = {
+			DMI_EXACT_MATCH(DMI_SYS_VENDOR, "Intel(R) Client Systems"),
+			DMI_EXACT_MATCH(DMI_PRODUCT_NAME, "LAPKC71E"),
+		},
+		.driver_data = &lapkc71e_descriptor,
 	},
 	{
 		.ident = "Intel NUC x15",
