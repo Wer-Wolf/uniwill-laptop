@@ -46,6 +46,7 @@
 #include <linux/sysfs.h>
 #include <linux/types.h>
 #include <linux/units.h>
+#include <linux/version.h>
 
 #include <acpi/battery.h>
 
@@ -369,6 +370,7 @@
 #define UNIWILL_FEATURE_KEYBOARD_BACKLIGHT	BIT(12)
 #define UNIWILL_FEATURE_AC_AUTO_BOOT		BIT(13)
 #define UNIWILL_FEATURE_USB_POWERSHARE		BIT(14)
+#define UNIWILL_FEATURE_PERFORMANCE_MODE_RAW	BIT(15)
 
 enum usb_c_power_priority_options {
 	USB_C_POWER_PRIORITY_CHARGING = 0,
@@ -430,6 +432,8 @@ struct uniwill_device_descriptor {
 	bool kbd_led_single_color;
 	u8 kbd_led_max_brightness;
 	u8 lightbar_max_brightness;
+	bool firmware_managed_modes;
+	bool disable_wmi_events;
 	/* Executed during driver probing */
 	int (*probe)(struct uniwill_data *data);
 };
@@ -443,6 +447,7 @@ MODULE_PARM_DESC(force, "Force loading without checking for supported devices\n"
  * the associated registers are not always reliable.
  */
 static struct uniwill_device_descriptor device_descriptor __ro_after_init;
+static bool uniwill_wmi_registered;
 
 static const char * const uniwill_temp_labels[] = {
 	"CPU",
@@ -473,9 +478,6 @@ static const struct key_entry uniwill_keymap[] = {
 	{ KE_KEY,       UNIWILL_OSD_RFKILL,                     { KEY_RFKILL }},
 	{ KE_IGNORE,    UNIWILL_OSD_RADIOON,                    { KEY_UNKNOWN }},
 	{ KE_IGNORE,    UNIWILL_OSD_RADIOOFF,                   { KEY_UNKNOWN }},
-
-	/* Reported when user wants to cycle the platform profile */
-	{ KE_KEY,       UNIWILL_OSD_PERFORMANCE_MODE_TOGGLE,    { KEY_F14 }},
 
 	/* Reported when the user wants to adjust the brightness of the keyboard */
 	{ KE_KEY,       UNIWILL_OSD_KBDILLUMDOWN,               { KEY_KBDILLUMDOWN }},
@@ -653,6 +655,7 @@ static bool uniwill_readable_reg(struct device *dev, unsigned int reg)
 	case EC_ADDR_RGB_BLUE:
 	case EC_ADDR_BIOS_OEM_2:
 	case EC_ADDR_KBD_STATUS:
+	case EC_ADDR_MANUAL_FAN_CTRL:
 	case EC_ADDR_OEM_4:
 	case EC_ADDR_CHARGE_CTRL:
 	case EC_ADDR_LIGHTBAR_BAT_CTRL:
@@ -688,6 +691,7 @@ static bool uniwill_volatile_reg(struct device *dev, unsigned int reg)
 	case EC_ADDR_TRIGGER:
 	case EC_ADDR_SWITCH_STATUS:
 	case EC_ADDR_KBD_STATUS:
+	case EC_ADDR_MANUAL_FAN_CTRL:
 	case EC_ADDR_OEM_4:
 	case EC_ADDR_CHARGE_CTRL:
 	case EC_ADDR_USB_C_POWER_PRIORITY:
@@ -768,6 +772,22 @@ static ssize_t fn_lock_show(struct device *dev, struct device_attribute *attr, c
 }
 
 static DEVICE_ATTR_RW(fn_lock);
+
+static ssize_t performance_mode_raw_show(struct device *dev, struct device_attribute *attr,
+					 char *buf)
+{
+	struct uniwill_data *data = dev_get_drvdata(dev);
+	unsigned int value;
+	int ret;
+
+	ret = regmap_read(data->regmap, EC_ADDR_MANUAL_FAN_CTRL, &value);
+	if (ret < 0)
+		return ret;
+
+	return sysfs_emit(buf, "0x%02x\n", value);
+}
+
+static DEVICE_ATTR_RO(performance_mode_raw);
 
 static int uniwill_write_super_key_enable(struct uniwill_data *data, bool status)
 {
@@ -1253,6 +1273,7 @@ static DEVICE_ATTR_RW(usb_powershare_high);
 static struct attribute *uniwill_attrs[] = {
 	/* Keyboard-related */
 	&dev_attr_fn_lock.attr,
+	&dev_attr_performance_mode_raw.attr,
 	&dev_attr_super_key_enable.attr,
 	&dev_attr_touchpad_toggle_enable.attr,
 	/* Lightbar-related */
@@ -1273,6 +1294,11 @@ static umode_t uniwill_attr_is_visible(struct kobject *kobj, struct attribute *a
 
 	if (attr == &dev_attr_fn_lock.attr) {
 		if (uniwill_device_supports(data, UNIWILL_FEATURE_FN_LOCK))
+			return attr->mode;
+	}
+
+	if (attr == &dev_attr_performance_mode_raw.attr) {
+		if (uniwill_device_supports(data, UNIWILL_FEATURE_PERFORMANCE_MODE_RAW))
 			return attr->mode;
 	}
 
@@ -1793,7 +1819,9 @@ static int uniwill_rgb_kbd_led_init(struct uniwill_data *data)
 			intensity_all_zeros = false;
 
 		data->kbd_led_mc_subled_info[i].intensity = regval;
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(7, 2, 0)
 		data->kbd_led_mc_subled_info[i].max_intensity = KBD_LED_MAX_INTENSITY;
+#endif
 		data->kbd_led_mc_subled_info[i].channel = i;
 	}
 
@@ -2175,6 +2203,8 @@ static int uniwill_notifier_call(struct notifier_block *nb, unsigned long action
 	int ret;
 
 	switch (action) {
+	case UNIWILL_OSD_PERFORMANCE_MODE_TOGGLE:
+		return NOTIFY_DONE;
 	case UNIWILL_OSD_BATTERY_ALERT:
 		if (!uniwill_device_supports_any(data,
 						 UNIWILL_FEATURE_BATTERY_CHARGE_LIMIT |
@@ -2294,6 +2324,9 @@ static int uniwill_ec_init(struct uniwill_data *data)
 
 	data->project_id = value;
 	dev_dbg(data->dev, "Project ID: %u\n", value);
+
+	if (device_descriptor.firmware_managed_modes)
+		return 0;
 
 	ret = regmap_set_bits(data->regmap, EC_ADDR_AP_OEM, ENABLE_MANUAL_CTRL);
 	if (ret < 0)
@@ -2752,6 +2785,24 @@ static struct uniwill_device_descriptor tux_featureset_2_nvidia_descriptor __ini
 		    UNIWILL_FEATURE_USB_C_POWER_PRIORITY,
 };
 
+static struct uniwill_device_descriptor maibenben_x558_descriptor __initdata = {
+	.features = UNIWILL_FEATURE_FN_LOCK |
+		    UNIWILL_FEATURE_SUPER_KEY |
+		    UNIWILL_FEATURE_BATTERY_CHARGE_MODES |
+		    UNIWILL_FEATURE_CPU_TEMP |
+		    UNIWILL_FEATURE_GPU_TEMP |
+		    UNIWILL_FEATURE_PRIMARY_FAN |
+		    UNIWILL_FEATURE_SECONDARY_FAN |
+		    UNIWILL_FEATURE_NVIDIA_CTGP_CONTROL |
+		    UNIWILL_FEATURE_USB_C_POWER_PRIORITY |
+		    UNIWILL_FEATURE_KEYBOARD_BACKLIGHT |
+		    UNIWILL_FEATURE_PERFORMANCE_MODE_RAW,
+	.kbd_led_single_color = false,
+	.kbd_led_max_brightness = 4,
+	.firmware_managed_modes = true,
+	.disable_wmi_events = true,
+};
+
 static struct uniwill_device_descriptor tux_featureset_3_nvidia_descriptor __initdata = {
 	.features = UNIWILL_FEATURE_FN_LOCK |
 		    UNIWILL_FEATURE_SUPER_KEY |
@@ -3157,6 +3208,14 @@ static const struct dmi_system_id uniwill_dmi_table[] __initconst = {
 		.driver_data = &tux_featureset_2_nvidia_descriptor,
 	},
 	{
+		.ident = "MAIBENBEN X558",
+		.matches = {
+			DMI_MATCH(DMI_SYS_VENDOR, "MAIBENBEN"),
+			DMI_EXACT_MATCH(DMI_BOARD_NAME, "X558"),
+		},
+		.driver_data = &maibenben_x558_descriptor,
+	},
+	{
 		.ident = "TUXEDO Polaris 15/17 Gen2 Intel",
 		.matches = {
 			DMI_MATCH(DMI_SYS_VENDOR, "TUXEDO"),
@@ -3364,11 +3423,15 @@ static int __init uniwill_init(void)
 	if (ret < 0)
 		return ret;
 
+	if (device_descriptor.disable_wmi_events)
+		return 0;
+
 	ret = uniwill_wmi_register_driver();
 	if (ret < 0) {
 		platform_driver_unregister(&uniwill_driver);
 		return ret;
 	}
+	uniwill_wmi_registered = true;
 
 	return 0;
 }
@@ -3376,7 +3439,8 @@ module_init(uniwill_init);
 
 static void __exit uniwill_exit(void)
 {
-	uniwill_wmi_unregister_driver();
+	if (uniwill_wmi_registered)
+		uniwill_wmi_unregister_driver();
 	platform_driver_unregister(&uniwill_driver);
 }
 module_exit(uniwill_exit);

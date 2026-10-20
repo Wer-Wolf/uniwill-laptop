@@ -17,6 +17,7 @@
 #include <linux/notifier.h>
 #include <linux/printk.h>
 #include <linux/types.h>
+#include <linux/version.h>
 #include <linux/wmi.h>
 
 #include "uniwill-wmi.h"
@@ -49,12 +50,13 @@ static void uniwill_wmi_notify(struct wmi_device *wdev, union acpi_object *obj)
 	u32 value;
 	int ret;
 
+	if (!obj)
+		return;
+
 	if (obj->type != ACPI_TYPE_INTEGER)
 		return;
 
 	value = obj->integer.value;
-
-	dev_dbg(&wdev->dev, "Received WMI event %u\n", value);
 
 	ret = blocking_notifier_call_chain(&uniwill_wmi_chain_head, value, NULL);
 	if (notifier_to_errno(ret) < 0)
@@ -79,7 +81,9 @@ static struct wmi_driver uniwill_wmi_driver = {
 		.probe_type = PROBE_PREFER_ASYNCHRONOUS,
 	},
 	.id_table = uniwill_wmi_id_table,
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(7, 1, 0)
 	.min_event_size = sizeof(u32),
+#endif
 	.notify = uniwill_wmi_notify,
 	.no_singleton = true,
 };
