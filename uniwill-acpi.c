@@ -2799,8 +2799,7 @@ static struct uniwill_device_descriptor maibenben_x558_descriptor __initdata = {
 		    UNIWILL_FEATURE_PERFORMANCE_MODE_RAW,
 	.kbd_led_single_color = false,
 	.kbd_led_max_brightness = 4,
-	.firmware_managed_modes = true,
-	.disable_wmi_events = true,
+	.firmware_managed_modes = true
 };
 
 static struct uniwill_device_descriptor tux_featureset_3_nvidia_descriptor __initdata = {
