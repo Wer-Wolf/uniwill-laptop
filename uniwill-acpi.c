@@ -3103,7 +3103,7 @@ static const struct dmi_system_id uniwill_dmi_table[] __initconst = {
 		.ident = "MECHREVO JIAOLONG Series-X6xR55xK",
 		.matches = {
 			DMI_MATCH(DMI_SYS_VENDOR, "MECHREVO"),
-			DMI_EXACT_MATCH(DMI_BOARD_NAME, "IAOLONG Series-X6xR55xK"),
+			DMI_EXACT_MATCH(DMI_BOARD_NAME, "JIAOLONG Series-X6xR55xK"),
 		},
 		.driver_data = &mechrevo_jiaolong_series_x6xr55xk,
 	},
