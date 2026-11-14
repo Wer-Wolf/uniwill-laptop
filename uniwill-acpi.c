@@ -2779,6 +2779,37 @@ static struct uniwill_device_descriptor lapkc71f_descriptor __initdata = {
 	.lightbar_max_intensity = 200,
 };
 
+static struct uniwill_device_descriptor ripple_nova_descriptor __initdata = {
+	.features = UNIWILL_FEATURE_FN_LOCK |
+		    UNIWILL_FEATURE_SUPER_KEY |
+		    UNIWILL_FEATURE_TOUCHPAD_TOGGLE |
+		    UNIWILL_FEATURE_BATTERY_CHARGE_MODES |
+		    UNIWILL_FEATURE_CPU_TEMP |
+		    UNIWILL_FEATURE_GPU_TEMP |
+		    UNIWILL_FEATURE_PRIMARY_FAN |
+		    UNIWILL_FEATURE_SECONDARY_FAN |
+		    UNIWILL_FEATURE_NVIDIA_CTGP_CONTROL | // TODO
+		    UNIWILL_FEATURE_KEYBOARD_BACKLIGHT |
+		    UNIWILL_FEATURE_AC_AUTO_BOOT |	// TODO
+		    UNIWILL_FEATURE_USB_POWERSHARE,
+	.kbd_led_single_color = false,
+	.kbd_led_max_brightness = 4,
+};
+
+/* TODO */
+static struct uniwill_device_descriptor slimbook_executive_14_uc2_descriptor __initdata = {
+	.features = UNIWILL_FEATURE_FN_LOCK |
+		    UNIWILL_FEATURE_SUPER_KEY |
+		    UNIWILL_FEATURE_BATTERY_CHARGE_MODES |
+		    UNIWILL_FEATURE_CPU_TEMP |
+		    UNIWILL_FEATURE_PRIMARY_FAN |
+		    UNIWILL_FEATURE_KEYBOARD_BACKLIGHT |
+		    UNIWILL_FEATURE_AC_AUTO_BOOT |
+		    UNIWILL_FEATURE_USB_POWERSHARE,
+	.kbd_led_single_color = true,
+	.kbd_led_max_brightness = 4,
+};
+
 static struct uniwill_device_descriptor pfxnuxx_pfxluxx_phxprxx_descriptor __initdata = {
 	.features = UNIWILL_FEATURE_FN_LOCK |
 		    UNIWILL_FEATURE_SUPER_KEY |
@@ -3145,6 +3176,29 @@ static const struct dmi_system_id uniwill_dmi_table[] __initconst = {
 			DMI_EXACT_MATCH(DMI_PRODUCT_NAME, "LAPKC71F"),
 		},
 		.driver_data = &lapkc71f_descriptor,
+	},
+	{
+		.ident = "Ripple Nova",
+		.matches = {
+			/*
+			 * The SMBIOS table does not contain any valid vendor strings, so we
+			 * have to _hope_ that the combination of serial number prefix and
+			 * OEM string will be reliable enough.
+			 */
+			DMI_EXACT_MATCH(DMI_SYS_VENDOR, "Standard"),
+			DMI_EXACT_MATCH(DMI_PRODUCT_NAME, "Standard"),
+			DMI_MATCH(DMI_PRODUCT_SERIAL, "GM5AGFO"),
+			DMI_EXACT_MATCH(DMI_OEM_STRING, "GM5AGFO"),
+		},
+		.driver_data = &ripple_nova_descriptor,
+	},
+	{
+		.ident = "SLIMBOOK Executive 14 UC2",
+		.matches = {
+			DMI_MATCH(DMI_SYS_VENDOR, "SLIMBOOK"),
+			DMI_EXACT_MATCH(DMI_BOARD_NAME, "Executive-14-UC2"),
+		},
+		.driver_data = &slimbook_executive_14_uc2_descriptor,
 	},
 	{
 		.ident = "TUXEDO InfinityBook Pro 14 Gen6 Intel",
